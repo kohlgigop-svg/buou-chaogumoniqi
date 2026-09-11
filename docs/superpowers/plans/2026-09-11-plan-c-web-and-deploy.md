@@ -1176,10 +1176,80 @@ server 全量跑时 `test/api/market-admin.test.ts` 有 1 项稳定失败：
 - **此项需要用户提供 Zeabur 账号或授权**；无法自动完成时，产出可执行的部署清单
   与 `zeabur.json`/环境变量模板，并把待办明确交给用户。
 
-- [ ] **Step 1**: 本地全量构建 + 浏览器端到端走查 + 截图
-- [ ] **Step 2**: Docker 本地构建与运行验证
-- [ ] **Step 3**: Zeabur 部署（或产出部署清单待用户执行）
-- [ ] **Step 4: Commit** — `docs: plan c local acceptance and deployment runbook`
+- [x] **Step 1**: 本地全量构建 + 浏览器端到端走查 + 截图
+- [x] **Step 2**: Docker 本地构建与运行验证
+- [x] **Step 3**: Zeabur 部署（或产出部署清单待用户执行）
+- [x] **Step 4: Commit** — `docs: plan c local acceptance and deployment runbook`
+
+### Task 11 实施记录（2026-09-11）
+
+**产物**：
+
+- `docs/superpowers/plans/2026-09-11-plan-c-acceptance.md` —— 验收记录（§18 九条逐条对照、
+  三轮探针结果、截图清单、部署 runbook、勘误与遗留）
+- `zeabur.env.example` —— 环境变量模板（可直接粘贴进 Zeabur Variables）
+- `server/README.md` —— 新增「部署与运维」章节；环境变量表补 `WEB_DIST`
+
+**验收方式**：真实 Chrome（`--headless=new` + CDP，零依赖，Node 内置 `WebSocket`/`fetch` 直连
+DevTools 协议）对**真启动的生产构建产物**发起三轮探针，共 **74/74 断言全绿**：
+
+| 轮次 | 脚本 | 断言 | 通过 | 覆盖重点 |
+|---|---|---:|---:|---|
+| 1 | `_acc_cdp.mjs` | 40 | 40 | 渲染/注册登录/各页面/admin 403/WS 自洽/375px 移动端/控制台与网络审计 |
+| 2 | `_acc_order.mjs` | 23 | 23 | 初始资金、GENESIS 流水、下单成交、**幂等**、报课排班、后台四分区、**总账审计**、公告、config 白名单、备份 |
+| 3 | `_acc_t1.mjs` | 11 | 11 | **T+1**（`qtySellable=0` + 卖出被拒 `INSUFFICIENT_POSITION`）、`lastTick` 单调、WS 订阅替换 |
+
+截图 19 张留档并逐张人工核验渲染正常（清单见验收文档 §4；截图与探针脚本属临时产物，
+收尾时已清理未入库）。
+
+**关键实证**：
+
+- **T+1 双侧生效**：服务端拒绝（400 `INSUFFICIENT_POSITION`）与前端「可卖」显示 0 同时成立
+  —— 只做 UI 禁用而不做服务端拒绝是不可接受的。
+- **下单幂等**：同 `clientKey` 重发返回同一 `orderId` 且 `reused:true`。
+- **费用向量**：`commission=500`(¥5.00) / `stamp=0` / `transfer=1`，与服务端 `core/money.ts`
+  冻结向量表同源。
+- **总账审计**：`{"globalOk":true,"usersOk":true,"checkedUsers":4,"failures":[]}`。
+- **375px 无横向溢出**：`/market` 与 `/market/000003` 溢出均为 **0px**。
+
+**Step 2 降级说明**：本机**无** docker/podman，且 `wsl.exe` 被安全策略列入程序黑名单
+（不可申请放行），无法执行 `docker build`。改为**在 scratch 目录逐条复刻 Dockerfile 每条指令**
+（`npm ci` 290 包 → `npm run build` → `npm prune --omit=dev` 移除 162 包且 workspace 软链与
+运行时依赖全保留 → 严格按 COPY 清单组装 → 重建软链 → 真启动），并逐端点实测：
+`/healthz` 200 JSON、`/`·`/market`·`/admin` 200 HTML、**`/api/nonexistent` 404 JSON（未被吞）**、
+`/api/me` 401、`/ws` 404 非 HTML、`/assets/index-*.js` `content-length: 529898` 与磁盘一致。
+镜像构建逻辑与运行时布局**功能正确**；「Docker 引擎自身能否完成构建」这一平台行为
+留待真机确认（风险低）。
+
+**Step 3 降级说明**：Zeabur 需外部账号/授权，按计划允许的降级路径产出可执行 runbook
+（§5）与 `zeabur.env.example`，**待办明确交给用户**。
+
+**验收暴露的问题**：
+
+1. **我的探针自身写错 6 处契约**（**非应用 bug**，已全部修正）：
+   `side` 应为 `'B'`（非 `'buy'`）、`type` 应为 `'M'`/`'L'`（非 `'market'`）、
+   `ability` 应为 `'FIT'` 等六个大写码（非 `'physique'`）、公告发布端点是
+   `POST /api/admin/announce`（**单数**）、排行榜真实 DOM 是
+   `<ul data-testid="lb-list">`（非 `<table>`）、启动清理被 bulk-delete 守卫拦截。
+   另注：个股路由是 **`/market/:code`**（非 `/stock/:code`）。
+2. **`SHIFT_CAP` 测试跨日假设错误**（既有缺陷，**未修**，超范围）：
+   上轮误判为 flaky，本轮三步证明为**确定性失败**（还原 `app.ts` 到 HEAD 后失败一模一样）。
+   真根因：`scheduleShift` 的 `start = max(nowGmin, busyUntil)` 使第 2 班从第 1 班下班时刻排起，
+   第 1 班跨午夜时第 2 班落进**下一个游戏日**，而日上限按 `start_gmin` 算天 → 查到 0 班 →
+   不触发 `SHIFT_CAP`。实测：`shift#1` 8274222(day 5746)→8274702(day 5747)，
+   `shift#2` 8274702(day 5747)。**产品行为正确，错的是测试假定「连排必然同日」**。
+   建议测试侧改用 `structuredClone(DEFAULTS)` + 同游戏日内连排。
+3. **`applyOverride` 原位改写 `DEFAULTS` 单例**（既有隐患，**未修**）：
+   `admin.ts` 的 `applyOverride(cfg,...)` 直接改 `cfg.work.shiftsPerDay`，而测试
+   `buildApp({cfg: DEFAULTS})` 共享同一对象 → 实测 `2` 变 `1` 且**下个用例仍读到 `1`**
+   （跨用例泄漏）。当前该用例恰好排最后故未被咬到。建议读取时深拷贝或 `buildApp` 内
+   `structuredClone`。
+4. **环境假象**：运行日志 `[backup] Error: [safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED]`
+   是沙箱删除守卫拦截备份轮转，引擎继续正常推进，**非应用缺陷**，生产环境不存在该守卫。
+
+**遗留（不属计划 C 范围）**：规格 §4.4「竞价当轮挂单净需求影响统一价」仍待实现
+（README 已知限制 5，V1 验收前需补齐）。计划 C 闭合了计划 B 六条限制中的「前端未做」与
+「部署未做」两条。
 
 ---
 

@@ -1,0 +1,8 @@
+.worktrees/
+node_modules/
+dist/
+*.db
+*.db-*
+/data/
+coverage/
+.git-broken-backup/

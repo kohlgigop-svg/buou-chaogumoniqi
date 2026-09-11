@@ -1,0 +1,6 @@
+{
+  "name": "paper-trader", "private": true, "type": "module",
+  "workspaces": ["shared", "server", "web"],
+  "engines": { "node": ">=22" },
+  "scripts": { "test": "npm run test -w server", "simulate": "npm run simulate -w server" }
+}

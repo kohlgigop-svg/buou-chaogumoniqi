@@ -821,7 +821,7 @@ DOM 与 Node 的定时器签名不兼容（Node 版带 `__promisify__`），注�
 
 ---
 
-## Task 9: 管理后台 `/admin`
+## Task 9: 管理后台 `/admin` ✅ 已完成
 
 **Files:**
 - Create: `web/src/pages/Admin.tsx`、`web/src/pages/admin/*.tsx`
@@ -836,10 +836,129 @@ DOM 与 Node 的定时器签名不兼容（Node 版带 `__promisify__`），注�
   `trading.`/`credit.`/`loans.`/`work.`**，前端先校验前缀再发请求）；
   备份列表与下载。
 
-- [ ] **Step 1: 失败测试** —— 非管理员不渲染管理 UI；config 前端前缀校验拦住
+- [x] **Step 1: 失败测试** —— 非管理员不渲染管理 UI；config 前端前缀校验拦住
   `auth.sessionDays`（不发请求）；封禁需二次确认；审计 `failures` 非空时红字列出
-- [ ] **Step 2-4: RED→实现→GREEN**
-- [ ] **Step 5: Commit** — `feat(web): admin console`
+- [x] **Step 2-4: RED→实现→GREEN**
+- [x] **Step 5: Commit** — `feat(web): admin console`
+
+### 实施记录
+
+**1. 文件清单**（`web/src/`）
+
+| 文件 | 职责 |
+|---|---|
+| `pages/adminLogic.ts` | 纯逻辑：白名单前缀校验、值解析（JSON 优先/回落字符串）、字节格式化、用户过滤、备份排序 |
+| `pages/Admin.tsx` | 容器：**守卫在挂载子面板之前返回** + 5 个分区导航 |
+| `pages/admin/UsersPanel.tsx` | 用户表 + 封禁/解封二次确认 + 重置密码弹窗 |
+| `pages/admin/AnnouncePanel.tsx` | 公告发布 + 已发布列表 |
+| `pages/admin/EnginePanel.tsx` | 引擎状态 4 项 + 总账审计 |
+| `pages/admin/ConfigPanel.tsx` | 当前配置一览 + 单键热改 + 值类型回显 |
+| `pages/admin/BackupPanel.tsx` | 备份降序列表 + 原生下载链接 |
+| `components/Confirm.tsx` | `Confirm`（含 Esc/焦点管理）+ `Toast` |
+
+**2. ⚠️ 守卫必须写在「挂载子面板之前」，这是"不发请求"的唯一正确实现方式**
+
+子面板各自在 `useEffect` 里 `load()`。如果把权限判断写进每个子面板，它已经跑过了，
+请求已经出去了，守卫就只是"事后遮掩"。所以 `Admin` 是**唯一**的守卫点，且必须在
+`return` 之前短路：
+
+```tsx
+if (!isAuthed(session) || !session.user.isAdmin) {
+  return <div className="page-error" data-testid="admin-forbidden">…</div>;
+}
+```
+
+生产链路上 `routes.tsx` 的 `RequireAdmin` 已包住本页，`Admin` 内的守卫属于**纵深防御**
+（测试直接渲染 `<Admin/>`、将来若有人挂到别处而忘了包守卫）。文案与 `RequireAdmin`
+统一为「无权限访问管理后台」，避免两条路径给出两种 403。
+
+测试用 `calls.filter(c => c.url.includes('/api/admin/')).toHaveLength(0)` 锁死这一点。
+
+**3. ⚠️ 两条色系不能混用：「方向色」vs「语义色」**
+
+`theme.css` 原有 `.tone-up`/`.tone-down` 是**方向色**，跟 A 股红涨绿跌走：
+`tone-up` 是**红**、`tone-down` 是**绿**。拿它表达"好/坏"会语义错位 ——
+给"对账失败"加 `tone-up` 虽然显示红，但名字里的 `up` 会被读成"上涨"。
+
+故新增一组**语义色**（与涨跌方向解耦），放在同一处并加了警告注释：
+
+```css
+.tone-good    { color: var(--down);    }  /* 绿：正常、通过 */
+.tone-warning { color: var(--warning); }  /* 黄：需注意 */
+.tone-danger  { color: var(--up);      }  /* 红：异常、失败、封禁 */
+```
+
+审计失败列表用 `tone-danger`，封禁状态用 `tone-danger`，用户表正常态用中性 `tone-flat`
+（避免满屏红绿）。
+
+**4. `lagTone` 的档位名与 CSS 类名不同名**，必须显式映射
+
+`lagTone()` 回 `'ok' | 'warn' | 'danger'`，而 CSS 类叫 `tone-good`/`tone-warning`/
+`tone-danger` —— `ok ≠ good`。用模板串拼接会拼出 `.tone-ok`（不存在，静默无色）。
+改为显式查表：
+
+```tsx
+const LAG_CLASS: Record<ReturnType<typeof lagTone>, string> = {
+  ok: 'tone-good', warn: 'tone-warning', danger: 'tone-danger',
+};
+```
+
+**5. tick 计数器**不要**用 `fmtQty`**
+
+`fmtQty` 是给"股数/数量"用的（带千分位）。`lastTick`/`tickInDay` 是**递增序数**
+（游标），`3,012` 这种写法会让人误以为是金额或股量。改用 `fmtTick`（裸数字），
+便于直接和日志里的 tick 号对照。
+
+**6. ⚠️⚠️ 端到端实证抓到 4 个单元测试**无法**发现的契约事实**
+
+替身 fetch 按"我以为的服务端返回"响应，是循环论证 —— 与 Task 8 的 `chgBp` 单位错误
+同源。故写了真客户端逻辑 × 真 Fastify 服务端的探针（**98 项断言全过，跑完即删**）。
+其中 4 项是只有真服务端才会暴露的：
+
+| # | 事实 | 影响与处置 |
+|---|---|---|
+| ① | `GET /api/admin/users` 的 `isAdmin` 是 **0/1 整数**，不是 `boolean`（`/api/auth/*`、`/api/me` 才用 `=== 1` 显式转换） | `api.ts` 的 `AdminUserRow.isAdmin` 从 `boolean` 改为 `number`；`UsersPanel` 改用 `=== 1`。测试替身同步改成 `0`/`1`，避免替身"比真服务端好说话" |
+| ② | 全新库未跑 tick 时 **`lastTick === -1`**（哨兵值，不是 0） | 服务端 `((lt % 1200) + 1200) % 1200` 得 `1199`；而 JS 原生 `-1 % 1200 === -1`。**客户端绝不能自己算 `tickInDay`**，必须用服务端值 |
+| ③ | **白名单只校验前缀，不校验字段存在性**：`work.noSuchField` 会**真的**写进 config | 白名单挡的是"非热改小节"，挡不住"小节内错别字"。`ConfigPanel` 的 toast 回显完整键名供自查（原本误用响应里的 `r.key`，缺字段时会打印 `undefined`，已改为回显**发送的键**）|
+| ④ | **未登录 → `UNAUTHORIZED`；已登录非管理员 → `FORBIDDEN`**，两个不同码 | `errors.ts` 对 `FORBIDDEN` 有专门文案，`UNAUTHORIZED` 走全局 401 拦截（跳登录）；两者不能混为一谈 |
+
+**7. ⚠️ 响应缺字段会把整个后台白屏 —— 4 个面板都加了字段防御**
+
+真服务端在异常/代理场景下可能返回缺字段的体。`setUsers(r.users)` 后再
+`filterUsers(users, …)` 会对 `undefined` 求值抛错，React 会**卸载整棵树**，
+管理后台变成一片空白。宁可"显示空表"也不要白屏：
+
+```tsx
+setUsers(Array.isArray(r.users) ? r.users : []);
+```
+
+同类修复：`AnnouncePanel`（`r.items`）、`BackupPanel`（`r.files`）、
+`ConfigPanel`（`r.config ?? {}`）、`EnginePanel`（`a.failures ?? []`）。
+
+**这是被 `routes.test.tsx` 的一条既有断言抓出来的**：该测试的 fetch 替身对
+`/api/admin/users` 落到默认 `{ok:true}`，导致 `UsersPanel` 崩掉、整页空白。
+
+**8. Admin 是「容器 + 分区导航」，默认只挂载用户表**
+
+刻意不一次性挂载 5 个面板：那会让首屏同时打 5 个 admin 接口（含**昂贵的全库逐用户
+对账**）。故组件测试新增 `renderAdminAt(session, tabId)` 辅助，各分区测试先显式切过去。
+
+**9. 分区导航（5 个）**：用户 / 公告 / 引擎·审计 / 配置 / 备份。
+未做「admin_logs 审计日志」分区 —— 服务端已在写 `admin_logs`，但没有读取端点，
+属后续可选项（需要先加 `GET /api/admin/logs`）。
+
+**10. 测试与类型检查**：`web` **23 文件 / 546 项全绿**（Task 9 新增 59 项：
+`adminLogic.test.ts` 32 + `admin.test.tsx` 27；另 `routes.test.tsx` 1 项断言从
+"占位文案"改为"后台容器已挂载"）。两侧 `tsc --noEmit` 零错误。
+`vite build` 成功（529.89 kB / gzip 168.90 kB）。
+
+**11. 顺带完成 Task 8 遗留的 toast 容器**：`components/Confirm.tsx` 里的 `Toast`
+（testid `admin-toast`，`tone` 为 `ok`/`error`）已可复用给 `useFillFeed` 的成交提示。
+
+**12. 已验证但未做的取舍**：`BackupPanel` 用原生 `<a href>` 下载（几十 MB 二进制走
+fetch 要先全进内存再拼 Blob，慢且要自己回收 URL），代价是**拿不到错误响应** ——
+403/404 只会得到一个失败的下载。探针已确认"文件不存在时不返回 200"，
+故 UI 上应保证正常路径可用，异常路径靠备份列表本身的存在性来兜。
 
 ---
 

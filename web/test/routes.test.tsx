@@ -191,7 +191,10 @@ describe('管理员守卫', () => {
   it('管理员访问 /admin → 正常渲染后台', async () => {
     renderAt('/admin', authed(root));
     await screen.findByText('管理后台', { selector: '.appshell__title' });
-    expect(placeholderText()).toBe('管理后台');
+    // Task 9 起 /admin 是真实后台页（不再是 `.page-placeholder` 占位），
+    // 故这里改断言后台容器本身已挂载。
+    expect(screen.getByTestId('admin-panel')).toBeInTheDocument();
+    expect(placeholderText()).toBeNull();
   });
 });
 

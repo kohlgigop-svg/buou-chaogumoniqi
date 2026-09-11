@@ -293,6 +293,62 @@ export const leaderboardApi = {
   get: (by: 'total' | 'return') => api.get<Leaderboard>('/api/leaderboard', { by }),
 };
 
+// ---------- 管理后台（Task 9） ----------
+
+/** 管理端用户行：DB 行 + 估值摘要（服务端 `api/admin.ts` 拼装）。 */
+export interface AdminUserRow {
+  id: number; username: string; credit: number; status: string;
+  /**
+   * ⚠️ SQLite 的 BOOLEAN 落库是 **0/1 整数**，不是 JS `boolean`
+   * （实测：`SELECT is_admin isAdmin` 回来的是 `1`/`0`）。
+   * 故这里标 `number` 而非 `boolean` —— 真值判断（`u.isAdmin ? …`）两者等价，
+   * 但把类型标成 `boolean` 会诱导别人写 `=== true`，那是静默失配的经典来源。
+   */
+  isAdmin: number;
+  bankruptCount: number; createdDay: number;
+  valuation: Valuation;
+}
+
+export interface AdminEngineView {
+  day: number; tickInDay: number; lastTick: number;
+  /** 距最近一次 tick 的秒数（服务端 `admin.ts` 计算，与前端 `lagSecondsFrom` 同口径）。 */
+  lagSeconds: number;
+}
+
+export interface AuditFailure { id: number; username: string; error: string }
+export interface AdminAuditView {
+  globalOk: boolean; globalError: string | null; usersOk: boolean;
+  checkedUsers: number; failures: AuditFailure[];
+}
+
+export interface AdminConfigView {
+  /** 进程内生效的完整配置（含默认值与已应用的 override）。 */
+  config: Record<string, unknown>;
+  /** 仅 DB 里显式写过的 override。 */
+  overrides: { key: string; value: string }[];
+}
+
+export interface BackupFile { file: string; bytes: number }
+
+export const adminApi = {
+  users: (q?: string) => api.get<{ users: AdminUserRow[] }>('/api/admin/users', { q }),
+  /** 重置密码：服务端会踢掉该用户**全部**会话（含当前正在用的）。 */
+  resetPassword: (id: number, newPassword: string) =>
+    api.post<{ ok: true }>(`/api/admin/users/${id}/reset-password`, { newPassword }),
+  ban: (id: number) => api.post<{ ok: true }>(`/api/admin/users/${id}/ban`),
+  unban: (id: number) => api.post<{ ok: true }>(`/api/admin/users/${id}/unban`),
+  announce: (content: string) => api.post<{ ok: true }>('/api/admin/announce', { content }),
+  engine: () => api.get<AdminEngineView>('/api/admin/engine'),
+  audit: () => api.get<AdminAuditView>('/api/admin/audit'),
+  config: () => api.get<AdminConfigView>('/api/admin/config'),
+  /** 热改配置。服务端仅接受白名单前缀（`trading.`/`credit.`/`loans.`/`work.`）。 */
+  putConfig: (key: string, value: unknown) =>
+    api.put<{ ok: true; key: string; value: unknown }>('/api/admin/config', { key, value }),
+  backups: () => api.get<{ files: BackupFile[] }>('/api/admin/backups'),
+  /** 下载 URL（直接给 `<a href>`，不走 fetch —— 需要浏览器原生下载行为）。 */
+  backupUrl: (file: string) => `/api/admin/backups/${encodeURIComponent(file)}`,
+};
+
 /** `/healthz` 的公开字段（无鉴权）。用于推导当前游戏时间。 */
 export interface HealthView { ok: true; day: number; lastTick: number }
 

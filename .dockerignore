@@ -1,0 +1,42 @@
+# .dockerignore —— 构建上下文瘦身 + 防宿主机产物污染镜像。
+#
+# 两条原则：
+#   1) 凡是**镜像内会重新生成**的（dist、node_modules）都不传，避免宿主机（Windows）
+#      的产物盖掉 Linux 镜像里的构建输出、或把 Windows 版原生二进制带进去。
+#   2) 凡是**不该进镜像**的（本地数据、密钥、版本库、测试报告）都不传。
+
+# --- 依赖与构建产物（镜像内重装/重编）---
+node_modules
+**/node_modules
+dist
+**/dist
+
+# --- 版本库与工作树 ---
+.git
+.gitignore
+.gitattributes
+# 上一会话 .git 损坏后的备份目录（已 gitignore，但可能仍在磁盘上）
+.git-broken-backup
+.worktrees
+
+# --- 本地运行数据（绝不进镜像；容器内用 /data 挂卷）---
+data
+**/data
+*.db
+*.db-*
+backups
+coverage
+
+# --- 编辑器 / 工具缓存 ---
+.superpowers
+.vscode
+.idea
+*.log
+
+# --- 文档不参与运行时（保留可减小上下文；如需在镜像内查 README 请删掉这两行）---
+**/*.md
+docs
+
+# --- 环境变量文件（防止误把密钥烤进镜像层）---
+.env
+.env.*

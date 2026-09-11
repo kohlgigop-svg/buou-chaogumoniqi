@@ -1,4 +1,29 @@
-{ "name": "@pt/shared", "version": "0.0.0", "type": "module",
-  "main": "src/index.ts", "types": "src/index.ts",
-  "exports": { ".": { "types": "./src/index.ts", "default": "./src/index.ts" } },
-  "dependencies": { "zod": "^3.25.0" } }
+{
+  "name": "@pt/shared",
+  "version": "0.0.0",
+  "type": "module",
+  "//": [
+    "本包是被 server / web 共用的 zod schema。",
+    "",
+    "为什么默认入口指向构建产物而不是源码：",
+    "开发工具（vitest / vite / tsx）能直接吃 TypeScript 源码，指向 src/index.ts 最省事；",
+    "但**生产** `node server/dist/index.js` 里的 `import '@pt/shared'` 走 Node 原生解析，",
+    "Node 不能加载 .ts —— 实测报 ERR_MODULE_NOT_FOUND: shared/src/schemas.js。",
+    "故 default 指向 dist/index.js，types 仍指源码（类型检查不必等构建产物）。",
+    "跑生产前先 `npm run build -w shared`（根 `npm run build` 已包含）。"
+  ],
+  "main": "dist/index.js",
+  "types": "src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": { "zod": "^3.25.0" }
+}

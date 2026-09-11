@@ -1,7 +1,10 @@
-// api/app.ts —— Fastify 应用骨架：cookie/rate-limit 插件、错误信封、会话鉴权、/healthz、/api/me。
+// api/app.ts —— Fastify 应用骨架：cookie/rate-limit 插件、错误信封、会话鉴权、/healthz、/api/me，
+// 以及（可选）托管前端构建产物的静态服务 + SPA history fallback。
+import { existsSync } from 'node:fs';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
+import fastifyStatic from '@fastify/static';
 import { ZodError } from 'zod';
 import type { DB } from '../db/database.js';
 import type { Config } from '../config/defaults.js';
@@ -19,7 +22,12 @@ import { GameClock } from '../core/clock.js';
 import { processDueForUser } from '../domain/work.js';
 
 export interface AppDeps { db: DB; cfg: Config; engine: Engine; matcher?: PlayerMatcher | null;
-  dataDir?: string; now?: () => number; clock?: GameClock }
+  dataDir?: string; now?: () => number; clock?: GameClock;
+  /**
+   * 前端构建产物目录（如 `web/dist`）。给定时托管静态资源并启用 SPA fallback；
+   * 目录不存在则**静默跳过** —— 开发期只想跑 API 时不该因此启动失败。
+   */
+  webDist?: string }
 
 export class AppError extends Error {
   constructor(public code: string, public status: number, message: string) { super(message); }
@@ -114,5 +122,51 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await registerAdminRoutes(app, { db, cfg, now, dataDir: deps.dataDir });
   await registerWsRoutes(app, { db, engine, matcher: deps.matcher ?? null, now });
 
+  await registerStaticServing(app, deps.webDist);
+
   return app;
+}
+
+/**
+ * 托管前端构建产物 + SPA history fallback。
+ *
+ * 三个坑，逐一说明为什么这么写：
+ *
+ * ① `wildcard: false` —— 不让 `@fastify/static` 注册 `/*`。若它接管了通配路由，
+ *    我们就无法在"未命中"时区分 SPA 路由与打错的 API 路径。
+ *
+ * ② **`setNotFoundHandler` 是唯一的 fallback 入口，且必须显式排除 `/api`、`/ws`、
+ *    `/healthz`**。SPA 的直觉写法是"未命中一律回 index.html"，但本项目 `/api/*`
+ *    的未命中**必须**保持 `{code:'NOT_FOUND'}` JSON 信封：前端 `api.ts` 会
+ *    `JSON.parse` 响应体，拿到 HTML 会以 `Unexpected token '<'` 炸掉，
+ *    报错完全指不到真正原因（打错了 URL）。`/ws` 未命中同理不得回 HTML，
+ *    否则 WS 客户端握手失败时会读到一堆网页源码。
+ *
+ * ③ 只对 `GET`/`HEAD` fallback。POST 到一个不存在的路径回 index.html 毫无意义，
+ *    还会掩盖"写接口打错"的问题。
+ *
+ * `webDist` 目录不存在时整体跳过：开发期只跑 API 是常态，不该因此启动失败。
+ */
+async function registerStaticServing(app: FastifyInstance, webDist?: string): Promise<void> {
+  if (webDist === undefined || webDist === '' || !existsSync(webDist)) return;
+
+  await app.register(fastifyStatic, { root: webDist, wildcard: false });
+
+  app.setNotFoundHandler((req, reply) => {
+    // 非 GET/HEAD：保持默认 JSON 404。
+    if (req.method !== 'GET' && req.method !== 'HEAD') return sendJsonNotFound(req, reply);
+    // API / WS / 健康检查：绝不能退化成 HTML。
+    const url = req.raw.url ?? req.url;
+    const path = url.split('?')[0] ?? '';
+    if (path.startsWith('/api/') || path.startsWith('/api')
+      || path.startsWith('/ws') || path.startsWith('/healthz')) {
+      return sendJsonNotFound(req, reply);
+    }
+    return reply.sendFile('index.html');
+  });
+}
+
+/** 统一的 JSON 404（与原默认行为一致的 `{code:'NOT_FOUND'}` 信封）。 */
+function sendJsonNotFound(req: FastifyRequest, reply: FastifyReply): FastifyReply {
+  return reply.status(404).send({ code: 'NOT_FOUND', message: `route ${req.url} not found` });
 }

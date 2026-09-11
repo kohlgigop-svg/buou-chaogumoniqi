@@ -991,11 +991,171 @@ fetch 要先全进内存再拼 Blob，慢且要自己回收 URL），代价是**
   若镜像内构建失败，回退方案是 builder 阶段装 `python3 make g++` 走源码编译。
 - `.dockerignore` 排除 `node_modules`、`data`、`*.db`、`.git`、`web/dist`。
 
-- [ ] **Step 1: 失败测试** —— 有 webDist 时 `GET /` 返回 index.html；
+- [x] **Step 1: 失败测试** —— 有 webDist 时 `GET /` 返回 index.html；
   `GET /some/spa/route` 返回 index.html；`GET /api/nonexistent` 仍是 JSON 404 而非 HTML；
   `GET /healthz` 正常；无 webDist 时 `GET /` 仍是 404
-- [ ] **Step 2-4: RED→实现→GREEN**
-- [ ] **Step 5: Commit** — `feat(server): host spa build artefact and add multi-stage dockerfile`
+- [x] **Step 2-4: RED→实现→GREEN**
+- [x] **Step 5: Commit** — `feat(server): host spa build artefact and add multi-stage dockerfile`
+
+### 实施记录（与计划的偏差，均已实证）
+
+**测试规模**：新增 `server/test/api/static.test.ts` **13 项**；`static.test.ts` 单独 13/13 全绿、
+`web` 维持 **23 文件 / 546 项全绿**；shared / server / web 三侧 `tsc --noEmit` 均零错误。
+
+> ⚠️ **server 全量跑时有 1 项失败，但已证明是 HEAD 就存在的既有缺陷，与本 Task 无关。**
+> 详见下面第 6 节 —— 这是一个被上一会话**误判为 flaky**的真实 bug，本会话用探针定位到了根因。
+
+---
+
+**1. ⚠️⚠️ 计划里"`start` 脚本本来就能跑"是错的 —— 它是一个从未被执行过的缺口**
+
+计划 Task 10 只要求"托管构建产物"，没提**服务端自己**能不能以生产方式启动。
+实测 `node server/dist/index.js` 当场两连崩：
+
+| 崩溃 | 根因 | 修复 |
+|---|---|---|
+| `ERR_MODULE_NOT_FOUND: shared/src/schemas.js` | `@pt/shared` 是**纯 TS 源码包**（`main: src/index.ts`），而 Node 原生 ESM 加载器**不能加载 `.ts`**。开发期一直靠 vitest/tsx 的转译才没暴露 —— 也就是说根 `start` 脚本**从来没有真正跑通过**，只是从没人以生产方式起过服务。 | 给 shared 加 `tsconfig.build.json` + `build` 脚本，`exports.default` 指 `dist/index.js`，`types` 仍指源码（类型检查不必等构建产物） |
+| `ENOENT: scandir .../dist/db/migrations` | `tsc` 只输出 `.js`，`.sql` 迁移**不会**被拷贝；而 `openDb` 是运行时 `readdirSync(MIG_DIR)` 读目录 | 新增 `server/scripts/copy-assets.mjs`（用 Node `cpSync`，Windows 本机与 Linux 镜像行为一致），挂在 server 的 `build` 脚本里 |
+
+所以根 `package.json` 的 `build` 顺序**必须**是 shared → server → web，
+且 `server/dist` 里必须同时有 `.js` 与 `db/migrations/*.sql`。这两条都写进 Dockerfile 注释了。
+
+---
+
+**2. ⚠️⚠️ Dockerfile 里 workspace 符号链接的坑：相对层级是 `../../`，不是 `../`**
+
+`npm ci` 在 workspaces 下会建 `node_modules/@pt/shared -> <仓库根>/shared`，且是**绝对路径**软链。
+绝对路径在 Docker 里恰好能存活（两阶段 `/app` 一致），**但一旦软链断掉，Node 不会报错，
+而是继续向上层目录查找** —— 这是整个 Task 10 最隐蔽的一处：
+
+| 写法 | 实际解析到 | 后果 |
+|---|---|---|
+| `ln -sfn ../shared`（错） | `/app/node_modules/shared`（不存在）→ 向上逃逸 | Node 一路找到宿主机 `…/shared/src/index.ts`，`exports.default` 形同虚设，报 `does not provide an export named 'ChangePasswordSchema'` —— **完全指不到根因** |
+| `ln -sfn ../../shared`（对） | `/app/node_modules/@pt/../../shared` = `/app/shared` | 命中 `dist/index.js`，正常 |
+
+启动日志实证（`import.meta.resolve`）：
+- 错：`file:///E:/%E5%B8%83%E5%81%B6/paper-trader/shared/src/index.ts` ← 逃逸到宿主机
+- 对：`file:///E:/%E5%B8%83%E5%81%B6/paper-trader/_runner/shared/dist/index.js`
+
+因此 Dockerfile 的 `COPY` 之后**必须**显式重建为相对软链（`mkdir -p` + `ln -sfn`），
+不能依赖"COPY 把 npm 造的绝对软链原样搬过来"。
+
+---
+
+**3. ⚠️ `setNotFoundHandler` 必须显式排除 `/api`、`/ws`、`/healthz`**
+
+SPA history fallback 的直觉写法是"未命中一律回 index.html"。本项目 `/api/*` 的未命中
+**必须**保持 `{code:'NOT_FOUND'}` JSON 信封 —— 否则前端 `api.ts` 拿到 HTML 会以
+`Unexpected token '<'` 炸在 `JSON.parse`，报错完全指不到"URL 打错了"。
+
+故三个排除 + **只对 `GET`/`HEAD` fallback**（POST 到不存在的路径回 index.html 毫无意义，
+还会掩盖写接口打错）。这条有专门的测试锁死（`static.test.ts` 里 4 条断言）。
+
+---
+
+**4. 本机无 Docker，改用「本地 Node 模拟两阶段」做等价验证**
+
+本机**没有** docker / podman，WSL 也被安全策略拦（`wsl.exe` 在程序黑名单里），
+故 `docker build` 无法在本机执行。改为在 `paper-trader/_dockersim`、`_runner` 两个临时目录
+**逐条复刻 Dockerfile 的每条指令**，实证结果是等价的：
+
+| 步骤 | 模拟方式 | 结果 |
+|---|---|---|
+| builder 装依赖 | `npm ci`（全量，含 dev） | 290 包 ✓ |
+| builder 构建 | `npm run build`（shared→server→web） | 三阶段全过，web 529.90 kB / gzip 168.90 kB ✓ |
+| 裁生产依赖 | `npm prune --omit=dev` | 移除 162 包；**workspace 软链仍在**；fastify / @fastify/static / better-sqlite3 / @node-rs/argon2 / zod 全在 ✓ |
+| runner 文件集 | 只拷 `package.json` + 三份 `dist` + 裁剪后 `node_modules` | 按 Dockerfile 的 COPY 清单逐个搬 ✓ |
+| runner 启动 | `node server/dist/index.js` | 启动成功，日志 `listening on :8099 (serving …/web/dist)` ✓ |
+
+端点实证（真 curl）：
+
+| 路径 | 结果 |
+|---|---|
+| `/healthz` | 200 JSON `{"ok":true,"day":2,"lastTick":1208}` ✓ |
+| `/` | 200 `text/html` ✓ |
+| `/market`、`/admin` | 200 `text/html`（SPA fallback）✓ |
+| `/api/nonexistent` | **404 `application/json` `{"code":"NOT_FOUND",...}`**（未被 fallback 吞掉）✓ |
+| `/api/me` | 401 ✓ |
+| `/ws` | 404 且非 HTML ✓ |
+| `/assets/index-*.js` | 200，`content-length: 529898` **与磁盘字节数一致** ✓ |
+| HEALTHCHECK 命令逐字执行 | `node -e "fetch(...).then(r=>process.exit(r.ok?0:1))"` 语义正确 ✓ |
+
+---
+
+**5. ⚠️ 勘误：计划里 `better-sqlite3` 的 ABI 说明**（重要，影响已验证结论）
+
+计划原文说"该包走 prebuilt 二进制，`npm ci` 时会按目标 Node 大版本自动拉取对应 ABI"。
+**实证不成立**：本机 `npm ci` 拉下来的是 **ABI 137（Node 24）** 的 prebuilt，
+在受管 Node 22（ABI 127）下加载直接失败：
+
+```
+Error: The module '…\better_sqlite3.node' was compiled against a different Node.js version
+using NODE_MODULE_VERSION 137. This version of Node.js requires NODE_MODULE_VERSION 127.
+```
+
+即 prebuilt **不是多份**，而是按**安装时**的 Node 大版本选定一份。结论：
+- builder 与 runner 同为 `node:22-bookworm-slim` 这一条**依然必须遵守**（plan 说对了）；
+- 但理由要说清：是"builder 在 Node 22 里安装 → 拉到 Node 22 的 prebuilt → runner 也是 Node 22 才匹配"，
+  **不是**"Node 会自动按目标版本拉"；
+- 换 Node 大版本重新 `npm ci` 是**必须**的，拷贝宿主机 `node_modules` 进镜像会 ABI 不匹配
+  （这正是 `.dockerignore` 排除 `node_modules` 的另一层原因）。
+- 兜底方案保持计划原样：镜像内构建失败则 builder 装 `python3 make g++` 走源码编译。
+
+---
+
+**6. `.dockerignore` 的两条原则**
+
+① 镜像内会重新生成的（`node_modules`、`**/dist`）都不传 —— 否则宿主机（Windows）的产物会
+盖掉 Linux 镜像里的构建输出，或把 Windows 版原生二进制带进去（= 上面那个 ABI 坑）。
+② 不该进镜像的（`data`、`*.db`、`.git`、`.worktrees`、`.git-broken-backup`、`.env*`）都不传。
+
+---
+
+**7. ⚠️⚠️ 顺带查实一个既有缺陷（**不属本 Task 范围，未修**）：`SHIFT_CAP` 测试的假设是错的**
+
+server 全量跑时 `test/api/market-admin.test.ts` 有 1 项稳定失败：
+`config：白名单外键 400；白名单键改后热生效（shiftsPerDay=1 → 第 2 班被拒）`，
+报 `expected 200 to be 429`。上一会话把它判为"测试顺序 flake"，**本会话证明这个判断是错的 ——
+它是确定性失败，且根因在测试的假设，不在被测代码。**
+
+**证据链（三步，均实证）：**
+
+1. **失败与我的改动无关**：把 `server/src/api/app.ts` 临时还原成 `HEAD` 版本再跑，
+   失败**一模一样**（`expected 200 to be 429`）。且失败涉及的三文件
+   （`market-admin.test.ts` / `domain/work.ts` / `api/work.ts` / `api/admin.ts`）本会话**从未改动**
+   （`git diff --stat HEAD -- <这些路径>` 为空）。
+2. **失败不是 flake**：单独跑该文件，连续两次都是 `16 passed | 1 failed`，稳定复现。
+3. **真根因（探针实测）**：`scheduleShift` 用
+   `start = max(nowGmin, busyUntil)`，即第 2 班从第 1 班的**下班时刻**开始排。
+   第 1 班占 8 游戏小时，若它跨过午夜，第 2 班的 `start` 就落在**下一个游戏日**，
+   而日上限查询是 `CAST(start_gmin/1440 AS INTEGER)+1 = <当天>` —— 查的是新的一天（0 班），
+   自然不触发 `SHIFT_CAP`。探针输出：
+
+   ```
+   PROBE3 shiftsPerDay = 1          ← 配置确实生效了
+   PROBE3 s1 = 200  s2 = 200 undefined   ← 第 2 班没被拒
+   PROBE3 shift#1 start_gmin=8274222 (day 5746) end_gmin=8274702 (day 5747) working
+   PROBE3 shift#2 start_gmin=8274702 (day 5747) end_gmin=8275182 (day 5747) scheduled
+   PROBE3 nowGmin = 8274222 (day 5746)
+   ```
+
+   → 第 1 班 day 5746 → 5747 跨日；第 2 班落在 day **5747**（新的一天）。
+   **`shiftsPerDay=1` 完全正确，"同一天第 2 班被拒"的语义也是对的；
+   错的是测试假定"连排两次必然落在同一游戏日"。**
+
+**顺带查实的另一处（同一测试文件的隐患，亦未修）**：`applyOverride` 是**原位改写**
+`DEFAULTS` 单例（`admin.ts` 的 `applyOverride` 直接把 `cfg.work.shiftsPerDay = 1` 写进去），
+而测试是 `buildApp({ cfg: DEFAULTS })` 共享同一对象。探针实证：写入后
+`DEFAULTS.work.shiftsPerDay` 从 `2` 变 `1`，且**下一个用例读到的仍是 `1`**
+（跨用例状态泄漏）。当前该文件里这个用例恰好排在最后，所以暂时没被咬到；
+但只要有人**在它后面**再加一个依赖 `shiftsPerDay` 的用例，就会莫名失败。
+
+**建议的修法（留给后续，不在 Task 10 里做，避免混入无关改动）**：
+- 测试侧：给 `buildApp` 传 `structuredClone(DEFAULTS)` 而不是共享单例；
+  并把"连排两次"改成"在同一游戏日内连排"（例如断言 `s1`/`s2` 的 `start_gmin` 落在同一 day，
+  或把 `shiftGameHours` 一起调小以确保不跨日）。
+- 或产品侧：若"每日上限"本意是"每个**自然日**的班次"而非"每 24 小时"，
+  则 `scheduleShift` 的跨日行为本身也需要重新定义（这属规格澄清，需先回规格确认）。
 
 ---
 

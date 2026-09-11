@@ -7,12 +7,14 @@
 //   MASTER_SEED     全局随机种子（整数）。缺省则随机生成并持久化到 config
 //   PORT            HTTP 端口（默认 8080）
 //   ADMIN_USER / ADMIN_PASSWORD  启动时 upsert 管理员账号
+//   WEB_DIST        前端构建产物目录（默认 ../web/dist，相对本仓库根）。
+//                   配了才托管前端；目录不存在则静默跳过（开发期只跑 API 也正常）。
 //   NODE_ENV        production 时日志更严格
 //
 // 补跑策略：把引擎从上次停止位置追到当前时刻。为免长时间静默，按「不超过 1 个交易日」分块
 // 推进并打印进度。交易完整性由引擎自身的 tick 事务保证，分块只是调度层的切片。
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { mkdirSync, existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { hash } from '@node-rs/argon2';
 import { openDb, type DB } from './db/database.js';
 import { DEFAULTS, type Config } from './config/defaults.js';
@@ -25,6 +27,29 @@ import { buildApp } from './api/app.js';
 
 const DEFAULT_DB = './data/game.db';
 const DEFAULT_PORT = 8080;
+/** 前端构建产物默认位置，相对**仓库根**（进程工作目录与部署镜像里都是根）。 */
+const DEFAULT_WEB_DIST = './web/dist';
+
+/**
+ * 解析前端构建产物目录。
+ *
+ * 返回 `undefined` 表示"不托管前端"，让 `buildApp` 完全跳过静态注册 ——
+ * 这样开发期（只跑 `server` 的 `dev` 脚本、`web/dist` 还没构建）行为与改动前一致。
+ * 目录存在性由 `buildApp` 再判一次（此处只做配置解析，不吞掉"配了但路径错"的诊断）。
+ */
+function resolveWebDist(): string | undefined {
+  const raw = process.env['WEB_DIST'] ?? DEFAULT_WEB_DIST;
+  if (raw.trim() === '') return undefined;
+  const abs = resolve(raw);
+  // 只在"用了默认值且目录不存在"时静默跳过；显式配置了却不存在则提示，避免排查困难。
+  if (!existsSync(abs)) {
+    if (process.env['WEB_DIST'] !== undefined) {
+      console.warn(`[bootstrap] WEB_DIST="${raw}" does not exist; frontend will not be served`);
+    }
+    return undefined;
+  }
+  return abs;
+}
 
 interface Genesis { genesisMs: number; masterSeed: number }
 
@@ -142,9 +167,11 @@ async function main(): Promise<void> {
     await upsertAdmin(db, process.env['ADMIN_USER'], process.env['ADMIN_PASSWORD']);
   }
 
-  const app = await buildApp({ db, cfg, engine, matcher, dataDir });
+  const webDist = resolveWebDist();
+  const app = await buildApp({ db, cfg, engine, matcher, dataDir, webDist });
   await app.listen({ port, host: '0.0.0.0' });
-  console.log(`[bootstrap] listening on :${port}`);
+  console.log(`[bootstrap] listening on :${port}`
+    + (webDist === undefined ? ' (api only)' : ` (serving ${webDist})`));
 
   let closing = false;
   const shutdown = async (signal: string): Promise<void> => {

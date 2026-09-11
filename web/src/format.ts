@@ -74,7 +74,17 @@ export function fmtPct(x: number): string {
   return `${x > 0 ? '+' : ''}${v}%`;
 }
 
-/** 基点 → 百分比：`10123` → `+1.23%`（10000 为平盘）。 */
+/**
+ * 基点 → 百分比：`10123` → `+1.23%`。**平盘 = 10000**。
+ *
+ * ⚠️ **不要用它格式化 WebSocket tick 的 `chgBp`！** WS 的 `chgBp` 口径是
+ * **平盘 = 0**（`0` → 平盘，`123` → +1.23%），与这里的「10000 = 平盘」不同。
+ * 混用会把平盘个股显示成 `-100.00%`（已由端到端探针实际抓到过这个错误）。
+ *
+ * WS 行情请用 `lib/useQuotes.ts` 的 `fmtStockChgBp` / `fmtIndexChgBp`。
+ *
+ * 本函数保留给「10000 基准」口径的调用方（如早期的 REST 端点）。
+ */
 export function fmtBp(bp: number): string {
   if (bp === 10000) return '0.00%';
   const pct = (bp - 10000) / 100;

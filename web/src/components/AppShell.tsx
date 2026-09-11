@@ -1,11 +1,12 @@
 // components/AppShell.tsx —— 应用外壳：顶部标题栏 + 内容区 + 底部 TabBar。
 //
-// 延迟角标（Task 8 接数据）先占位：行情有延迟时必须让用户看得见，
-// 但此处只负责渲染传入的值，不自己取数。
+// 延迟角标（Task 8）：行情有延迟时必须让用户看得见。默认从 `useRealtime()` 取，
+// 但保留 `latencyBadge` prop 以便测试直接注入文案、也便于将来别处复用。
 import { useEffect, useState, type ReactNode } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import TabBar from './TabBar.js';
 import { useSession } from '../session.js';
+import { useRealtime } from '../lib/realtime.js';
 
 /** 路由 → 标题。未列出的路由不显示标题栏标题（如个股页自带标题）。 */
 const TITLES: Record<string, string> = {
@@ -19,20 +20,27 @@ const TITLES: Record<string, string> = {
 };
 
 export interface AppShellProps {
-  /** 行情延迟角标文案（如「延迟 3s」）；为空则不显示。 */
+  /**
+   * 行情延迟角标文案（如「延迟 3s」）；为空则不显示。
+   * 不传时从实时连接读（正常延迟下也是 `null`，即不占位）。
+   */
   latencyBadge?: string | null;
   children?: ReactNode;
 }
 
-export default function AppShell({ latencyBadge = null, children }: AppShellProps): React.JSX.Element {
+export default function AppShell({ latencyBadge, children }: AppShellProps): React.JSX.Element {
   const { pathname } = useLocation();
   const title = TITLES[pathname] ?? '';
+  const { lagBadge, lag } = useRealtime();
+  // prop 优先级高于 context —— 测试与特殊页面需要能覆盖。
+  const badge = latencyBadge !== undefined ? latencyBadge : lagBadge;
   return (
     <div className="appshell">
       <header className="appshell__header">
         <span className="appshell__title">{title}</span>
-        {latencyBadge !== null && latencyBadge !== ''
-          ? <span className="appshell__latency">{latencyBadge}</span>
+        {badge !== null && badge !== ''
+          ? <span className={`appshell__latency appshell__latency--${lag.tone}`}
+              data-testid="latency-badge">{badge}</span>
           : null}
       </header>
       <main className="appshell__main">{children ?? <Outlet />}</main>

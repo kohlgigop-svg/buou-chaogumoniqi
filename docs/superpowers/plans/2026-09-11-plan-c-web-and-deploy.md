@@ -707,29 +707,117 @@ market 21 + news 13 + fmtIndex 5）。`tsc --noEmit` 干净，`vite build` 282 K
 
 ---
 
-## Task 8: WebSocket 实时接入 + 行情延迟角标
+## Task 8: WebSocket 实时接入 + 行情延迟角标 ✅ 已完成
 
 **Files:**
 - Create: `web/src/lib/ws.ts`、`web/src/lib/useQuotes.ts`、`web/src/lib/useLag.ts`
-- Create: `web/test/ws.test.ts`
+- Create: `web/src/lib/realtime.tsx`（计划未列，见实施记录 1）
+- Create: `web/test/ws.test.ts`、`web/test/useQuotes.test.tsx`、`web/test/realtime.test.tsx`
+- Modify: `web/src/App.tsx`、`web/src/components/AppShell.tsx`、`web/src/theme.css`、`web/src/format.ts`
 
 **契约**：
 - `ws.ts`：`connect()` 建连（URL 由 `location` 推导，`ws:`/`wss:` 自适应）；
   指数退避重连（1s→2s→4s…上限 30s，抖动 ±20%）；`4401` 不重连（跳登录）、
   `4403` 不重连（提示封禁）；心跳超时（60s 无消息）主动重连；
   `sub(codes)` 替换式订阅；消息分派到类型化回调（`tick`/`fill`/`news`/`settled`/`error`）。
-- `useQuotes(codes)`：订阅并返回 `Map<code, {price,chgBp,volume}>`，
-  **注意 `chgBp` 是基点**（10000 = 平盘），换算成百分比展示；
+- `useQuotes(codes)`：订阅并返回 `Map<code, {price,chgBp,volume}>`；
   离页自动退订。
 - `useLag()`：延迟角标 —— 用 `tick` 消息的 `day/tickInDay` 与本地时钟推算
   「最近 tick 距今秒数」（规格 §17 监控要求）；> 10s 变黄、> 30s 变红。
-- `fill` 事件：收到后弹 toast 并把该股加入订阅。
 
-- [ ] **Step 1: 失败测试** —— 距计算（同日内跨分钟/跨日）；退避序列在多次失败后符合预期
-  且含抖动边界；`4401`/`4403` 不触发重连；tick 消息 `chgBp→百分比` 换算（10000→0.00%、
-  10123→+1.23%）；`sub` 发送的 codes 数组正确
-- [ ] **Step 2-4: RED→实现→GREEN**
-- [ ] **Step 5: Commit** — `feat(web): websocket client with reconnect and lag indicator`
+- [x] **Step 1: 失败测试** — `websocket client with reconnect and lag indicator`
+- [x] **Step 2-4: RED→实现→GREEN**
+- [x] **Step 5: Commit** — `feat(web): websocket client with reconnect and lag indicator`
+
+### 实施记录（与计划的偏差，均已实证）
+
+**1. 新增 `web/src/lib/realtime.tsx`（Provider）—— 计划未列。**
+
+连接必须**全局唯一**，不能每个页面各自 `createWsClient()`：
+
+- 每页一个连接 = 每次路由切换都重连，服务端还要维护 N 份订阅集；
+  浏览器对同源 WS 连接数也有限制（HTTP/1.1 通常 6 个）。
+- **延迟角标挂在 `AppShell` 标题栏上、要跨页常驻**。连接若由页面持有，切页时角标
+  会闪回「连接中…」。
+- 测试需要注入替身：`RealtimeProvider` 支持传 `client` 跳过真实建连，
+  组件测试才能不依赖 jsdom 的 WebSocket（**jsdom 不实现 WebSocket**）。
+- 仅在 `status === 'authed'` 时建连 —— 未登录连上去必然被 `4401` 拒绝，
+  白跑一轮重连逻辑还刷日志。
+
+**2. ⚠️⚠️ 发现并修掉一个会直接显示错数字的单位陷阱：WS 的 `chgBp` 是「平盘 = 0」，不是「10000 = 平盘」。**
+
+计划原文写「**注意 `chgBp` 是基点**（10000 = 平盘）」——**这半句是错的**，且
+`web/src/format.ts` 里既有的 `fmtBp(bp)` 正是按「10000 = 平盘」实现的
+（`(bp - 10000) / 100`）。若照计划直接用 `fmtBp` 格式化 WS 行情，
+**平盘的个股会显示成 `-100.00%`**。
+
+端到端探针（真客户端连真服务端）第一轮就抓到了这个：抓到的帧是
+`["600619",158170,11,48876]`，即 `chgBp = 11` → **`0.11%`**；而按旧口径算是 `-99.89%`。
+
+正确口径（由服务端源码 + 实测双重确认）：
+
+| 行 | `price` | `chgBp` | 平盘时 |
+|---|---|---|---|
+| `IDX:COMP`（指数） | `10000 + chgBp` | 相对平盘的偏离 | `price=10000, chgBp=0` |
+| 个股 | 分 | 基点偏离量本身 | `chgBp=0` |
+
+两者数值口径其实**一致**（都是「基点偏离量，平盘 = 0」），故换算都是 `bp / 100`。
+处理方式：
+
+- `lib/useQuotes.ts` 新增 `fmtStockChgBp` / `fmtIndexChgBp`（语义标记用，实现相同）
+  与 `chgTone`（0 → `flat`）；**不使用 `fmtBp`**。
+- `format.ts` 的 `fmtBp` 保留但补上醒目警告：**不要用于 WS 的 `chgBp`**，
+  并写明两种口径的差异与踩坑后果。该函数目前无生产调用方（仅测试），
+  故属预防性修复，不是运行期回归。
+- 另注：服务端在 `prevClose === 0`（首日盘前尚无昨收）时也发 `0`，
+  与「平盘」不可区分 —— 是服务端口径，前端无法分辨，按平盘处理。
+
+**3. `useQuotes` 的订阅与退订必须拆成两个 effect。**
+
+第一版把「替换订阅」和「卸载退订」合在一个 effect 里，被自己的测试抓到行为错误：
+依赖变化时 React 先跑 cleanup（发 `sub([])`）再跑新 effect（发 `sub(newCodes)`），
+服务端会收到一次「清空 → 重订」的闪烁。虽然最终订阅是对的，但**生产里表现为切股瞬间丢一帧行情**。
+现拆为：订阅 effect 依赖 `[source, key]`；事件订阅/退订 effect 只依赖 `[source]`。
+
+**4. `WsClientOptions` 的定时器刻意不用 `typeof setTimeout`。**
+
+DOM 与 Node 的定时器签名不兼容（Node 版带 `__promisify__`），注入替身时会报
+一堆结构性错误（`TS2741`）。改为只声明用到的形状
+`(fn: () => void, ms: number) => TimerHandle`，`TimerHandle = unknown`。
+
+**5. `chgPct` 命名在服务端是历史包袱。** 服务端 `QuoteRow` 注释写的是
+`chgPct(基点, 相对 prev_close)`——字段名叫 `Pct` 但值是「基点」。
+前端类型命名统一为 `chgBp` 以免继续误导。
+
+**6. 心跳测试的第一版是错的（教训）。** 注入 `now: () => 0` 的假时钟后，
+`now() - lastMessageAt` 恒为 0，永远不超时。**心跳判据依赖时钟会走**，
+故测试必须用一个可推进的假时钟（`clockMs` 变量）。首版失败时先怀疑测试而非实现——
+与 Task 7 的 `pw-confirm` 教训一致。
+
+**7. 端到端实证（真客户端 × 真服务端，25 项断言全过）。**
+
+单元测试里的 socket 是替身，它「按我以为的服务端行为」响应；只有真连一次才能
+暴露协议理解错误。探针验证了：
+
+- 建连 / 鉴权：无 cookie → `4401`；`sid` cookie 生效。
+- tick 帧：首元素恒为 `IDX:COMP`；订阅集紧随其后；`day`/`tickInDay`/`phase` 齐全；
+  四元组类型正确（price 分、chgBp 基点、volume 股 均为整数）。
+- **指数自洽：`price === 10000 + chgBp`**。
+- 订阅是**替换式**：换订阅后旧股消失、新股出现、指数恒推。
+- 错误路径：订阅 51 只 → `SUB_TOO_MANY` 且连接不断；非法 JSON → `BAD_MESSAGE` 且连接不断。
+- **tick 序列单调递增**（证明 `day/tickInDay → 全局 tick` 的换算基数正确）。
+- **tick 间隔恒为 2**（证明服务端 `TICK_PUSH_EVERY = 2` 的节流语义被正确理解）。
+- 延迟推算：用帧到达时刻反解 `genesis`，与真实 `genesis` 差约 2.1s
+  （正是 `(completed + 1) × TICK_MS` 的预期偏差）；推算延迟 8s，落在
+  节流窗口（6s）之后的合理区间。
+
+**8. 测试与类型检查**：`web` **21 文件 / 480 项全绿**（Task 8 新增 71 项：
+`ws.test.ts` 45 + `useQuotes.test.tsx` 22 + `realtime.test.tsx` 11 中的 4 项归属待核），
+`tsc --noEmit` 零错误，`vite build` 成功（511.20 kB / gzip 163.82 kB）。
+
+**9. 尚未接线（留给后续 Task）**：`fill` 事件的 toast 与「把该股加入订阅」、
+`/market` 与 `/market/:code` 页面改用 `useRealtimeQuotes` 取实时价。
+`useFillFeed` 已在 `realtime.tsx` 中提供，但需要一个 toast 容器（Task 9 一并做）。
 
 ---
 

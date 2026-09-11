@@ -27,13 +27,16 @@ export class Engine {
   private readonly hooks: SettlementHook[];
   private readonly flow: FlowProvider;
   private readonly dataDir: string | undefined;
+  private readonly onTickError: (() => void) | undefined;
   private readonly masterSeed: number;
   private readonly genesisMs: number;
+  /** 实时循环周期：生产 1000ms 足够（tick 本身 3s）；测试注入小值以便快速推进。 */
+  private readonly tickMs: number;
   private readonly clock: GameClock;
-  private lastTick: number;
-  private regime: RegimeState;
-  private rngPricing: Rng;
-  private drift: Map<string, DriftItem[]>;
+  private lastTick!: number;
+  private regime!: RegimeState;
+  private rngPricing!: Rng;
+  private drift!: Map<string, DriftItem[]>;
   private timer: ReturnType<typeof setInterval> | null = null;
   private advanceTx: ((t: number, suppress: boolean) => void) | null = null;
   private pendingBackupDay: number | null = null; // 事务内只记录，提交后再 VACUUM
@@ -59,6 +62,8 @@ export class Engine {
     this.hooks = deps.settlementHooks ?? [];
     this.flow = deps.flow ?? NOOP_FLOW;
     this.dataDir = deps.dataDir;
+    this.onTickError = deps.onTickError;
+    this.tickMs = deps.tickMs ?? 1000;
     const row = this.db.prepare(
       'SELECT master_seed ms, genesis_ms gm, last_tick lt, state_json sj FROM engine_state WHERE id = 1',
     ).get() as { ms: number; gm: number; lt: number; sj: string } | undefined;
@@ -80,11 +85,7 @@ export class Engine {
       // 恢复：行内 seed/genesis 优先于构造参数；活状态一律取自 state_json（绝不重新 fromSeed）
       this.masterSeed = row.ms;
       this.genesisMs = row.gm;
-      this.lastTick = row.lt;
-      const s = JSON.parse(row.sj) as StateJson;
-      this.regime = s.regime;
-      this.rngPricing = Rng.restore(s.rng);
-      this.drift = restoreDrift(s.drift);
+      this.restoreFromRow();
     }
     this.clock = new GameClock(this.genesisMs);
   }
@@ -94,10 +95,11 @@ export class Engine {
     return this.advanceTo(this.clock.globalTick(nowMs), false);
   }
 
-  /** 实时模式：每秒补跑到当前时刻，并对启动后推进的 tick 触发 onTick 回调。 */
-  start(): void {
+  /** 实时模式：按 tickMs 周期补跑到当前时刻，并对启动后推进的 tick 触发 onTick 回调。
+   *  @param now 取当前墙钟毫秒；测试可注入假时钟 + 小周期，实现确定性推进。 */
+  start(now: () => number = Date.now): void {
     if (this.timer !== null) return;
-    this.timer = setInterval(() => { this.advanceTo(this.clock.globalTick(Date.now()), true); }, 1000);
+    this.timer = setInterval(() => { this.advanceTo(this.clock.globalTick(now()), true); }, this.tickMs);
   }
 
   stop(): void {
@@ -135,7 +137,14 @@ export class Engine {
     if (this.advanceTx === null) {
       this.advanceTx = this.db.transaction((tick: number, suppress: boolean) => this.tickBody(tick, suppress));
     }
-    this.advanceTx(t, suppressBackup);
+    try {
+      this.advanceTx(t, suppressBackup);
+    } catch (e) {
+      // 事务已回滚：内存态（regime/rngPricing/drift/lastTick）可能被本轮写脏，从行内快照重建。
+      this.restoreFromRow();
+      this.onTickError?.();
+      throw e;
+    }
     this.lastTick = t;
     // 备份必须在事务提交之后执行：VACUUM INTO 不能在事务内运行（会抛
     // "cannot VACUUM from within a transaction"）。结算路径（tickBody 内）只通过
@@ -216,6 +225,19 @@ export class Engine {
     const quotes = new Map<string, StockQuote>();
     for (const r of rows) quotes.set(r.code, toQuote(r));
     return quotes;
+  }
+
+  /** 从 engine_state 行恢复内存态（构造复用 + 事务异常回滚后重建；seed/genesis 不变）。 */
+  private restoreFromRow(): void {
+    const row = this.db.prepare(
+      'SELECT last_tick lt, state_json sj FROM engine_state WHERE id = 1',
+    ).get() as { lt: number; sj: string } | undefined;
+    if (row === undefined) throw new Error('engine_state missing on restore');
+    this.lastTick = row.lt;
+    const s = JSON.parse(row.sj) as StateJson;
+    this.regime = s.regime;
+    this.rngPricing = Rng.restore(s.rng);
+    this.drift = restoreDrift(s.drift);
   }
 
   private serializeState(): string {

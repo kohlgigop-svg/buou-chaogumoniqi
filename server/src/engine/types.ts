@@ -19,7 +19,10 @@ export interface FlowProvider {           // 玩家净流入（I_player 与竞�
   netFlow(code: string): number; }        // 单位：股，买正卖负；Noop 返回 0
 
 export interface EngineDeps { db: DB; cfg: Config; masterSeed: number; genesisMs: number;
-  matcher?: OrderMatcher; settlementHooks?: SettlementHook[]; flow?: FlowProvider; dataDir?: string }
+  matcher?: OrderMatcher; settlementHooks?: SettlementHook[]; flow?: FlowProvider; dataDir?: string;
+  onTickError?: () => void;
+  /** 实时循环周期（毫秒）。生产默认 1000；测试注入小值以便确定性快速推进。 */
+  tickMs?: number }
 
 export class NoopMatcher implements OrderMatcher {
   onContinuousTick(_ctx: TickCtx): void {}

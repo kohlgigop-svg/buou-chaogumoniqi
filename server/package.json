@@ -1,5 +1,31 @@
-{ "name": "@pt/server", "version": "0.0.0", "type": "module",
-  "scripts": { "test": "tsc --noEmit && vitest run", "test:watch": "vitest", "simulate": "tsx scripts/simulate.ts" },
-  "dependencies": { "better-sqlite3": "^12.4.1" },
-  "devDependencies": { "@types/better-sqlite3": "^7.6.13", "@types/node": "^24.3.0",
-    "tsx": "^4.20.0", "typescript": "^5.9.0", "vitest": "^3.2.0" } }
+{
+  "name": "@pt/server",
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "tsc --noEmit && vitest run",
+    "test:watch": "vitest",
+    "simulate": "tsx scripts/simulate.ts",
+    "soak": "tsx scripts/soak.ts",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/websocket": "^11.3.0",
+    "@node-rs/argon2": "^2.1.0",
+    "@pt/shared": "*",
+    "better-sqlite3": "^12.4.1",
+    "fastify": "^5.12.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.3.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0",
+    "ws": "^8.21.3"
+  }
+}

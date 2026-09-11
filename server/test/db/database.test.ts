@@ -17,7 +17,7 @@ describe('database', () => {
   });
   it('重复打开幂等', () => {
     const db = openDb(':memory:');
-    expect((db.pragma('user_version', { simple: true }) as number)).toBe(1);
+    expect((db.pragma('user_version', { simple: true }) as number)).toBe(2);
   });
   it('ledger 禁止 UPDATE/DELETE（触发器）', () => {
     const db = openDb(':memory:');

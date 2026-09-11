@@ -1,0 +1,17 @@
+// main.tsx —— 应用入口：挂载 React 根 + 引入全局样式。
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
+import App from './App.js';
+import './theme.css';
+
+const root = document.getElementById('root');
+if (root === null) throw new Error('#root not found');
+
+createRoot(root).render(
+  <StrictMode>
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
+  </StrictMode>,
+);

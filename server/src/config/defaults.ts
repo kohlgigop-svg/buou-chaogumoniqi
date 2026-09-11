@@ -17,6 +17,20 @@ export interface Config {
   playerImpactLambda: number;               // 0.8（玩家净流入价格冲击系数）
   poolTarget: number; poolMax: number;      // 48 / 50
   backupKeep: number;                       // 7
+  // —— 计划 B 扩展（规格 §5/§7/§8/§9/§10）——
+  trading: { marketBufferPct: number; slippageK: number; boardFillProb: number;
+    boardFillRatio: [number, number] };
+  auth: { initialCash: number; sessionDays: number; ipRegPerDay: number;
+    loginLockN: number; loginLockMin: number };
+  credit: { min: number; max: number; start: number; repayOnTime: number; repayEarly: number;
+    overduePerDay: number; forcedLiq: number; bankruptcyScore: number;
+    shiftPoint: number; shiftCapPer20d: number };
+  loans: { termDays: [number, number, number]; graceDays: number; penaltyMult: number;
+    liqOverdueDay: number; leverageDivisor: number; reliefCash: number;
+    tiers: [number, number, number][] };    // [minScore, 授信上限(分), 日息 e6]，minScore 降序
+  work: { wageBonusPerPoint: number; shiftsPerDay: number; shiftGameHours: number;
+    coursePriceBase: number; coursePriceMult: number; courseHoursPerLevel: number;
+    maxLevel: number; coursePrices: number[] };  // coursePrices：显式 10 级字面量表（分）
 }
 
 export const DEFAULTS: Config = {
@@ -44,4 +58,20 @@ export const DEFAULTS: Config = {
   poolTarget: 48,
   poolMax: 50,
   backupKeep: 7,
+  trading: { marketBufferPct: 0.02, slippageK: 0.06, boardFillProb: 0.25, boardFillRatio: [0.1, 0.5] },
+  auth: { initialCash: 10_000_000, sessionDays: 30, ipRegPerDay: 5, loginLockN: 5, loginLockMin: 15 },
+  credit: { min: 350, max: 850, start: 600, repayOnTime: 15, repayEarly: 20, overduePerDay: -8,
+    forcedLiq: -80, bankruptcyScore: 400, shiftPoint: 1, shiftCapPer20d: 10 },
+  loans: { termDays: [20, 60, 120], graceDays: 3, penaltyMult: 2, liqOverdueDay: 10,
+    leverageDivisor: 300, reliefCash: 2_000_000,
+    tiers: [ // <500 拒贷；取首个 minScore≤分数 的档
+      [850, 50_000_000, 300], [800, 32_000_000, 320], [750, 20_000_000, 350],
+      [700, 13_000_000, 400], [650, 8_000_000, 450], [600, 5_000_000, 500],
+      [550, 3_000_000, 550], [500, 2_000_000, 600],
+    ] },
+  work: { wageBonusPerPoint: 0.05, shiftsPerDay: 2, shiftGameHours: 8,
+    coursePriceBase: 500_000, coursePriceMult: 1.6, courseHoursPerLevel: 8, maxLevel: 10,
+    // base×1.6^n 逐级四舍五入到分的定值表（字面量为准）
+    coursePrices: [500_000, 800_000, 1_280_000, 2_048_000, 3_276_800,
+      5_242_880, 8_388_608, 13_421_773, 21_474_836, 34_359_738] },
 };

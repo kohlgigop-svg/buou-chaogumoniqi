@@ -2,5 +2,8 @@
   "name": "paper-trader", "private": true, "type": "module",
   "workspaces": ["shared", "server", "web"],
   "engines": { "node": ">=22" },
-  "scripts": { "test": "npm run test -w server", "simulate": "npm run simulate -w server" }
+  "scripts": { "test": "npm run test -w server && npm run test -w web",
+    "test:server": "npm run test -w server", "test:web": "npm run test -w web",
+    "simulate": "npm run simulate -w server", "soak": "npm run soak -w server",
+    "dev:web": "npm run dev -w web", "build:web": "npm run build -w web" }
 }

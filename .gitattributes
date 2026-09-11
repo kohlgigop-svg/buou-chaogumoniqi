@@ -1,0 +1,35 @@
+# 统一行尾：仓库内一律 LF，检出时由 Git 按平台决定（Windows 上 autocrlf 会转 CRLF）。
+# 这样可避免 Windows 开发机上每次编辑都产生"整文件行尾变更"的噪音 diff。
+* text=auto eol=lf
+
+# 显式声明文本类型（防止 Git 误判）
+*.ts   text eol=lf
+*.mts  text eol=lf
+*.cts  text eol=lf
+*.js   text eol=lf
+*.mjs  text eol=lf
+*.cjs  text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.sql  text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.html text eol=lf
+*.css  text eol=lf
+
+# 二进制：禁止行尾转换与文本 diff
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.db   binary
+*.sqlite binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
+
+# 生成物与锁文件：不参与语言统计、不展开 diff
+package-lock.json -diff linguist-generated=true
+*.map             -diff linguist-generated=true

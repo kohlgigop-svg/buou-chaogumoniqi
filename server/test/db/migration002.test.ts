@@ -1,8 +1,20 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { openDb, type DB } from '../../src/db/database.js';
+
+/**
+ * 最新迁移版本（从文件名推导）。
+ * 本文件测的是 002 自己引入的东西（jobs / login_attempts / 索引），
+ * 但 `user_version` 反映的是**跑到哪儿了**，故不能写死 2 —— 加一个 003 就白红一次。
+ */
+const LATEST_VERSION = Math.max(
+  ...readdirSync(join(dirname(fileURLToPath(import.meta.url)), '../../src/db/migrations'))
+    .filter(f => f.endsWith('.sql'))
+    .map(f => parseInt(f.slice(0, 3), 10)),
+);
 
 describe('migration 002_plan_b', () => {
   let dir: string;
@@ -20,8 +32,10 @@ describe('migration 002_plan_b', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('user_version = 2', () => {
-    expect(db.pragma('user_version', { simple: true }) as number).toBe(2);
+  it('002 已应用（user_version ≥ 2，且库整体推到最新）', () => {
+    const v = db.pragma('user_version', { simple: true }) as number;
+    expect(v).toBeGreaterThanOrEqual(2);
+    expect(v).toBe(LATEST_VERSION);
   });
 
   it('jobs 播种 10 行', () => {
@@ -57,10 +71,10 @@ describe('migration 002_plan_b', () => {
     expect(names).toContain('idx_loans_user');
   });
 
-  it('文件库 close 后重开幂等（user_version=2、jobs 仍 10 行）', () => {
+  it('文件库 close 后重开幂等（版本不再前进、jobs 仍 10 行）', () => {
     db.close();
     db = openDb(dbPath);
-    expect(db.pragma('user_version', { simple: true }) as number).toBe(2);
+    expect(db.pragma('user_version', { simple: true }) as number).toBe(LATEST_VERSION);
     const n = (db.prepare('SELECT COUNT(*) c FROM jobs').get() as any).c;
     expect(n).toBe(10);
   });

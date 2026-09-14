@@ -25,6 +25,20 @@ export const PlaceOrderSchema = z.object({
 export const BorrowSchema = z.object({ amount: z.number().int().positive(), termDays: z.number().int() });
 export const RepaySchema = z.object({ amount: z.number().int().positive() });
 
+// —— P2P（玩家间借贷）——
+// amount 单位统一为**分**（与站内所有金额一致）。
+export const P2pProposeSchema = z.object({
+  /** 'borrow' = 我要借钱（对手方是出借人）；'lend' = 我要放贷（对手方是借款人）。 */
+  role: z.enum(['borrow', 'lend']),
+  counterpartyId: z.number().int().positive(),
+  principal: z.number().int().positive(),
+  /** 应还总额（本金 + 利息）。等于 principal 即零息。 */
+  repayAmount: z.number().int().positive(),
+  termDays: z.number().int().positive(),
+  note: z.string().max(120).optional(),
+});
+export const P2pRepaySchema = z.object({ amount: z.number().int().positive() });
+
 // —— work ——
 export const ShiftSchema = z.object({ jobId: z.number().int().positive() });
 export const EnrollSchema = z.object({ ability: z.enum(['EDU', 'CODE', 'FIN', 'FIT', 'COMM', 'DESIGN']) });
@@ -36,5 +50,7 @@ export type ChangePasswordInput = z.infer<typeof ChangePasswordSchema>;
 export type PlaceOrderInput = z.infer<typeof PlaceOrderSchema>;
 export type BorrowInput = z.infer<typeof BorrowSchema>;
 export type RepayInput = z.infer<typeof RepaySchema>;
+export type P2pProposeInput = z.infer<typeof P2pProposeSchema>;
+export type P2pRepayInput = z.infer<typeof P2pRepaySchema>;
 export type ShiftInput = z.infer<typeof ShiftSchema>;
 export type EnrollInput = z.infer<typeof EnrollSchema>;

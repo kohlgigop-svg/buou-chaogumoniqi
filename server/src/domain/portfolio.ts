@@ -7,7 +7,9 @@ export interface Valuation {
   cashFrozen: Cents;
   positionsValue: Cents;      // Σ qty_total×stock_state.price（stocks.status='delisted' 按 0）
   loansOutstanding: Cents;    // Σ(outstanding+accrued_interest)，status IN ('active','grace','overdue')
-  totalAssets: Cents;         // cashAvailable+cashFrozen+positionsValue−loansOutstanding
+  p2pDebt: Cents;             // 我欠其他玩家的（P2P 借款人视角）
+  p2pCredit: Cents;           // 其他玩家欠我的（P2P 出借人视角）
+  totalAssets: Cents;         // cashAvailable+cashFrozen+positionsValue+p2pCredit−loansOutstanding−p2pDebt
   totalInflow: Cents;         // Σ ledger.amount：bucket='A' AND kind IN ('GENESIS','RELIEF') AND amount>0
   returnPct: number;          // totalInflow>0 ? (totalAssets−totalInflow)/totalInflow : 0
 }
@@ -72,13 +74,19 @@ export function valuation(db: DB, userId: number): Valuation {
       WHERE h.user_id = ? AND h.qty_total > 0`).get(userId) as { v: number }).v;
   const loansOutstanding = (db.prepare(`SELECT COALESCE(SUM(outstanding + accrued_interest), 0) v
       FROM loans WHERE user_id = ? AND status IN ('active','grace','overdue')`).get(userId) as { v: number }).v;
+  // P2P 债权债务：借出的钱是我的资产（别人欠我），借入的钱是我的负债。
+  // 只在 status IN ('active','grace','overdue') 时计入 —— pending 尚未划款，不构成任何一方的权利义务。
+  const p2pDebt = (db.prepare(`SELECT COALESCE(SUM(repay_amount - repaid), 0) v FROM p2p_loans
+      WHERE borrower_id = ? AND status IN ('active','grace','overdue')`).get(userId) as { v: number }).v;
+  const p2pCredit = (db.prepare(`SELECT COALESCE(SUM(repay_amount - repaid), 0) v FROM p2p_loans
+      WHERE lender_id = ? AND status IN ('active','grace','overdue')`).get(userId) as { v: number }).v;
   const totalInflow = (db.prepare(`SELECT COALESCE(SUM(amount), 0) v FROM ledger
       WHERE user_id = ? AND bucket = 'A' AND kind IN ('GENESIS','RELIEF') AND amount > 0`)
     .get(userId) as { v: number }).v;
-  const totalAssets = cash.a + cash.f + positionsValue - loansOutstanding;
+  const totalAssets = cash.a + cash.f + positionsValue + p2pCredit - loansOutstanding - p2pDebt;
   return {
     cashAvailable: cash.a, cashFrozen: cash.f, positionsValue, loansOutstanding,
-    totalAssets, totalInflow,
+    p2pDebt, p2pCredit, totalAssets, totalInflow,
     returnPct: totalInflow > 0 ? (totalAssets - totalInflow) / totalInflow : 0,
   };
 }

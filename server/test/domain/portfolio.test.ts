@@ -56,6 +56,20 @@ function mkLoan(userId: number, outstanding: number, accrued: number, status: st
     VALUES (?, ?, ?, 50000, 30, 1, 31, ?, ?)`).run(userId, outstanding, outstanding, accrued, status);
 }
 
+/**
+ * 直插一条 P2P 借据。`pair_lo/pair_hi` 是规范化的一对玩家 id —— 唯一索引要用，
+ * 直插时也不能漏（否则第二次插同一对不会撞索引，测试就跑偏了）。
+ */
+function mkP2p(borrowerId: number, lenderId: number, principal: number, repay: number,
+    repaid: number, status: string): void {
+  const lo = Math.min(borrowerId, lenderId);
+  const hi = Math.max(borrowerId, lenderId);
+  db.prepare(`INSERT INTO p2p_loans(borrower_id, lender_id, pair_lo, pair_hi, principal,
+      repay_amount, term_days, proposed_by, awaiting_id, day_created, start_day, due_day, repaid, status)
+    VALUES (?,?,?,?,?,?,30,'borrow',NULL,1,1,31,?,?)`)
+    .run(borrowerId, lenderId, lo, hi, principal, repay, repaid, status);
+}
+
 function rawLedger(userId: number, bucket: string, kind: string, amount: number): number {
   const r = db.prepare(`INSERT INTO ledger(user_id, bucket, day, tick, kind, amount, balance_after, ref_type, ref_id)
     VALUES (?, ?, 1, 0, ?, ?, 0, 'test', 0)`).run(userId, bucket, kind, amount);
@@ -85,6 +99,10 @@ const EXPECTED_VALUATION = {
   cashFrozen: 200_000,
   positionsValue: 370_200,          // 300×1234 + 摘牌 0
   loansOutstanding: 5_012_000,      // 5_000_000 + 12_000
+  // 本场景没有 P2P 借据，故债权/债务均为 0 —— 但字段必须存在：
+  // 净资产口径已经把 P2P 并进来（借出是资产、借入是负债），漏掉会让「有钱借出去」的人净资产凭空少一块。
+  p2pDebt: 0,
+  p2pCredit: 0,
   totalAssets: 3_558_200,           // 8_000_000+200_000+370_200−5_012_000
   totalInflow: 12_000_000,          // GENESIS 10_000_000 + RELIEF 2_000_000（仅 A 桶正腿）
   returnPct: (3_558_200 - 12_000_000) / 12_000_000,
@@ -142,9 +160,64 @@ describe('valuation', () => {
     mkLoan(u.id, 6_000, 60, 'forgiven');
     expect(valuation(db, u.id)).toEqual({
       cashAvailable: 0, cashFrozen: 0, positionsValue: 0,
-      loansOutstanding: 6_060, totalAssets: -6_060, totalInflow: 0, returnPct: 0,
+      loansOutstanding: 6_060, p2pDebt: 0, p2pCredit: 0,
+      totalAssets: -6_060, totalInflow: 0, returnPct: 0,
     });
     expect(positions(db, u.id)).toEqual([]);
+  });
+
+  it('⚠️ P2P 债权计入资产、债务计入负债（借出的钱不能凭空从净资产里消失）', () => {
+    const a = mkUser('p2p-borrower');
+    const b = mkUser('p2p-lender');
+    // a 向 b 借 10,000 元，谈定还 11,000 元，已还 1,000 元 → a 欠 10,000 元
+    mkP2p(a.id, b.id, 1_000_000, 1_100_000, 100_000, 'active');
+    // 让两人的现金各自体现「钱已经划过去了」：a 拿到 10,000，b 少掉 10,000
+    db.prepare('UPDATE users SET cash_available = 1000000 WHERE id = ?').run(a.id);
+    db.prepare('UPDATE users SET cash_available = 0 WHERE id = ?').run(b.id);
+
+    const va = valuation(db, a.id);
+    expect(va.p2pDebt).toBe(1_000_000);      // repay_amount − repaid
+    expect(va.p2pCredit).toBe(0);
+    // 借款人：现金 10,000 − 债 10,000 = 0
+    expect(va.totalAssets).toBe(1_000_000 - 1_000_000);
+
+    const vb = valuation(db, b.id);
+    expect(vb.p2pCredit).toBe(1_000_000);
+    expect(vb.p2pDebt).toBe(0);
+    // 出借人：现金 0 + 债权 10,000 = 10,000（净资产守恒：一方负债等于另一方资产）
+    expect(vb.totalAssets).toBe(1_000_000);
+    expect(va.totalAssets + vb.totalAssets).toBe(1_000_000);
+  });
+
+  it('⚠️ 只有已生效的 P2P 计入估值：pending 未划款、终止态已了结', () => {
+    const a = mkUser('p2p-status');
+    const b = mkUser('p2p-counter');
+    mkP2p(a.id, b.id, 1_000_000, 1_100_000, 0, 'active');
+    const v = valuation(db, a.id);
+    expect(v.p2pDebt).toBe(1_100_000);
+
+    // 换一对玩家再插各种状态：只有 active/grace/overdue 计入。
+    const c = mkUser('p2p-c');
+    mkP2p(c.id, a.id, 500_000, 500_000, 0, 'grace');
+    mkP2p(c.id, b.id, 700_000, 700_000, 0, 'overdue');
+    const vc = valuation(db, c.id);
+    expect(vc.p2pDebt).toBe(1_200_000);        // 500_000 + 700_000
+
+    const d = mkUser('p2p-d');
+    mkP2p(d.id, a.id, 900_000, 900_000, 0, 'pending');   // 还没划款 → 不算
+    expect(valuation(db, d.id).p2pDebt).toBe(0);
+    expect(valuation(db, d.id).p2pCredit).toBe(0);
+  });
+
+  it('P2P 与银行贷款同时存在时两者分别扣减，互不干扰', () => {
+    const a = mkUser('mixed');
+    const b = mkUser('mixed-counter');
+    mkLoan(a.id, 1_000_000, 0, 'active');               // 银行欠 10,000
+    mkP2p(a.id, b.id, 2_000_000, 2_000_000, 0, 'active'); // P2P 欠 20,000
+    const v = valuation(db, a.id);
+    expect(v.loansOutstanding).toBe(1_000_000);
+    expect(v.p2pDebt).toBe(2_000_000);
+    expect(v.totalAssets).toBe(-3_000_000);
   });
 });
 

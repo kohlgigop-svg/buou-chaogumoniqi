@@ -22,6 +22,7 @@ import { Engine } from './engine/engine.js';
 import { GameClock, TICK_MS, TICKS_PER_DAY } from './core/clock.js';
 import { PlayerMatcher } from './trading/matcher.js';
 import { LoanSettlementHook } from './domain/loans.js';
+import { P2pSettlementHook } from './domain/p2p.js';
 import { WorkSettlementHook } from './domain/work.js';
 import { buildApp } from './api/app.js';
 
@@ -146,14 +147,17 @@ async function main(): Promise<void> {
 
   // 撮合器既是 OrderMatcher（引擎驱动）也是 FlowProvider（定价读取上一 tick 净流）。
   const matcher = new PlayerMatcher({ db, cfg, masterSeed });
-  // 计划 B 结算钩子：贷款计息/宽限/逾期/强平/破产 + 打工/课程到点结转。
+  // 计划 B 结算钩子：贷款计息/宽限/逾期/强平/破产 + 打工/课程到点结转 + 玩家间借贷到期扣款。
   const loanHook = new LoanSettlementHook({ db, cfg });
   const workHook = new WorkSettlementHook({ db, cfg, clock: new GameClock(genesisMs) });
+  const p2pHook = new P2pSettlementHook({ db, cfg });
   const engine = new Engine({ db, cfg, masterSeed, genesisMs, dataDir,
     matcher, flow: matcher,
     // 事务回滚后引擎内存态会从行内快照重建；撮合器内存态同样必须回到落库状态，否则会发散。
     onTickError: (): void => matcher.resetMemory(),
-    settlementHooks: [loanHook, workHook],
+    // 顺序有意义：loanHook 先跑，破产结算会把该用户的 NPC 债务豁免并置 credit=basis；
+    // p2pHook 后跑，据此把该用户的 P2P 借据一并置 forgiven（出借方承担损失）。
+    settlementHooks: [loanHook, workHook, p2pHook],
   });
 
   const clock = new GameClock(genesisMs);

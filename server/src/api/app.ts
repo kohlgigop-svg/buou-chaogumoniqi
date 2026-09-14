@@ -13,6 +13,7 @@ import { registerAuthRoutes } from './auth.js';
 import { registerMeRoutes } from './me.js';
 import { registerTradingRoutes } from './trading.js';
 import { registerBankRoutes } from './bank.js';
+import { registerP2pRoutes } from './p2p.js';
 import { registerWorkRoutes } from './work.js';
 import { registerMarketRoutes } from './market.js';
 import { registerAdminRoutes } from './admin.js';
@@ -123,6 +124,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await registerMeRoutes(app, { db, cfg, clock, now });
   await registerTradingRoutes(app, { db, cfg });
   await registerBankRoutes(app, { db, cfg, engine });
+  await registerP2pRoutes(app, { db, cfg });
   await registerWorkRoutes(app, { db, cfg, clock, now });
   await registerMarketRoutes(app, { db });
   await registerAdminRoutes(app, { db, cfg, now, dataDir: deps.dataDir });

@@ -19,7 +19,7 @@ export interface Config {
   backupKeep: number;                       // 7
   // —— 计划 B 扩展（规格 §5/§7/§8/§9/§10）——
   trading: { marketBufferPct: number; slippageK: number; boardFillProb: number;
-    boardFillRatio: [number, number] };
+    boardFillRatio: [number, number]; auctionImpactK: number; auctionImpactCap: number };
   auth: { initialCash: number; sessionDays: number; ipRegPerDay: number;
     loginLockN: number; loginLockMin: number };
   credit: { min: number; max: number; start: number; repayOnTime: number; repayEarly: number;
@@ -58,7 +58,8 @@ export const DEFAULTS: Config = {
   poolTarget: 48,
   poolMax: 50,
   backupKeep: 7,
-  trading: { marketBufferPct: 0.02, slippageK: 0.06, boardFillProb: 0.25, boardFillRatio: [0.1, 0.5] },
+  trading: { marketBufferPct: 0.02, slippageK: 0.06, boardFillProb: 0.25, boardFillRatio: [0.1, 0.5],
+    auctionImpactK: 0.8, auctionImpactCap: 0.03 },
   auth: { initialCash: 10_000_000, sessionDays: 30, ipRegPerDay: 5, loginLockN: 5, loginLockMin: 15 },
   credit: { min: 350, max: 850, start: 600, repayOnTime: 15, repayEarly: 20, overduePerDay: -8,
     forcedLiq: -80, bankruptcyScore: 400, shiftPoint: 1, shiftCapPer20d: 10 },

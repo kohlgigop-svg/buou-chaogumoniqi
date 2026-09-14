@@ -174,7 +174,108 @@ describe('集合竞价及日终单元契约', () => {
   });
 });
 
+describe('规格 §4.4：集合竞价统一价受当轮挂单净需求失衡调整', () => {
+  let db: DB; let m: PlayerMatcher;
+  beforeEach(() => {
+    db = openDb(':memory:'); seedStocks(db, 1);
+    m = new PlayerMatcher({ db, cfg: DEFAULTS, masterSeed: SEED });
+  });
+  afterEach(() => db.close());
+
+  // CODE 的日均量 adv = 7.5e8（日），单 tick 均量 = adv/1100 ≈ 681,818 股。
+  // 净需求要产生可见调整，量级必须与之相当 —— 几百股在 1e-7 量级，四舍五入后恒为 0。
+  const BIG = 700_000;
+
+  /** 让参考价可预期：把 price 与 limit_up/limit_down 设为 1000。 */
+  function pinPrice(p = 1000): void {
+    db.prepare('UPDATE stock_state SET price=?, prev_close=?, limit_up=?, limit_down=? WHERE code=?')
+      .run(p, p, Math.round(p * 1.1), Math.round(p * 0.9), CODE);
+  }
+  function tradePrices(): number[] {
+    return (db.prepare('SELECT price FROM trades ORDER BY id').all() as { price: number }[]).map(r => r.price);
+  }
+
+  it('买单净需求占优时，统一价高于参考价', () => {
+    const uid = user(db, 'buy-heavy', 5_000_000_000); stock(db, uid, 100);
+    pinPrice(1000);
+    // 单边净买（无卖单）：净需求为正，统一价应上抬
+    order(db, uid, 20, 'B', 1050, BIG, 'b1');
+    const events: FillEvent[] = []; m.onFill(f => events.push(f));
+    db.transaction(() => m.onAuctionClear(ctx(db, 59), 'open'))();
+    expect(events).toHaveLength(1);
+    expect(events[0]!.price).toBeGreaterThan(1000);
+  });
+
+  it('卖单净需求占优时，统一价低于参考价', () => {
+    const uid = user(db, 'sell-heavy'); stock(db, uid, BIG);
+    pinPrice(1000);
+    order(db, uid, 20, 'S', 950, BIG, 's1');
+    const events: FillEvent[] = []; m.onFill(f => events.push(f));
+    db.transaction(() => m.onAuctionClear(ctx(db, 59), 'open'))();
+    expect(events).toHaveLength(1);
+    expect(events[0]!.price).toBeLessThan(1000);
+  });
+
+  it('买卖净需求为零时，统一价等于参考价', () => {
+    const buyer = user(db, 'np-buyer', 5_000_000_000); const seller = user(db, 'np-seller');
+    stock(db, seller, BIG);
+    pinPrice(1000);
+    order(db, buyer, 20, 'B', 1050, BIG, 'nb');
+    order(db, seller, 20, 'S', 950, BIG, 'ns');
+    const events: FillEvent[] = []; m.onFill(f => events.push(f));
+    db.transaction(() => m.onAuctionClear(ctx(db, 59), 'open'))();
+    expect(events).toHaveLength(2);
+    expect(events.every(e => e.price === 1000)).toBe(true);
+  });
+
+  it('调整幅度受 auctionImpactCap 限制（不越出涨跌停）', () => {
+    const uid = user(db, 'capped', 500_000_000_000); stock(db, uid, 100);
+    pinPrice(1000);
+    // 净买远超单 tick 均量：调整必须被 cap 夹住（3% → ≤1030），且不越过涨停 1100
+    order(db, uid, 20, 'B', 1090, 200_000_000, 'big');
+    const events: FillEvent[] = []; m.onFill(f => events.push(f));
+    db.transaction(() => m.onAuctionClear(ctx(db, 59), 'open'))();
+    expect(events).toHaveLength(1);
+    const p = events[0]!.price;
+    expect(p).toBeLessThanOrEqual(Math.round(1000 * (1 + DEFAULTS.trading.auctionImpactCap)) + 1);
+    expect(p).toBeGreaterThan(1000);
+  });
+
+  it('调整后的价格对所有合资格委托一致（统一价语义）', () => {
+    const buyer = user(db, 'uni-buyer', 5_000_000_000); const seller = user(db, 'uni-seller');
+    stock(db, seller, BIG);
+    pinPrice(1000);
+    order(db, buyer, 20, 'B', 1050, BIG, 'ub');
+    order(db, seller, 20, 'S', 950, BIG, 'us');
+    const events: FillEvent[] = []; m.onFill(f => events.push(f));
+    db.transaction(() => m.onAuctionClear(ctx(db, 59), 'open'))();
+    expect(new Set(tradePrices()).size).toBe(1); // 全部成交同价
+    expect(new Set(events.map(e => e.price)).size).toBe(1);
+    audit(db);
+  });
+
+  it('竞价调整不消耗撮合 RNG（确定性回放不受影响）', () => {
+    const uid = user(db, 'no-rng', 5_000_000_000); stock(db, uid, 100);
+    pinPrice(1000);
+    order(db, uid, 20, 'B', 1050, BIG, 'nr');
+    db.transaction(() => m.onAuctionClear(ctx(db, 59), 'open'))();
+    expect(JSON.parse((db.prepare("SELECT value FROM config WHERE key='matcher_rng'").get() as { value: string }).value))
+      .toEqual({ day: 1, state: Rng.fromSeed(SEED, 1, 'matching').serialize() });
+  });
+
+  it('净需求调整后账实自洽（守恒）', () => {
+    const buyer = user(db, 'ok-buyer', 5_000_000_000); const seller = user(db, 'ok-seller');
+    stock(db, seller, BIG);
+    pinPrice(1000);
+    order(db, buyer, 20, 'B', 1050, BIG, 'ob');
+    order(db, seller, 20, 'S', 950, BIG, 'os');
+    db.transaction(() => m.onAuctionClear(ctx(db, 59), 'open'))();
+    audit(db);
+  });
+});
+
 describe('真实引擎集合竞价、结算和重启', () => {
+
   it('开盘tick59成交、同日不可卖、日终过期释放、次日可卖；跨收盘重启结果一致', async () => {
     function build() {
       const db = openDb(':memory:');

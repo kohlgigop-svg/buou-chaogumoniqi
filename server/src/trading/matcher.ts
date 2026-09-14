@@ -123,7 +123,17 @@ export class PlayerMatcher implements OrderMatcher, FlowProvider {
     this.persist();
   }
 
-  /** 引擎先定出开/收盘价，合资格限价委托按时间优先以该统一价清算。 */
+  /**
+   * 引擎先定出开/收盘价，合资格限价委托按时间优先以该统一价清算。
+   *
+   * 规格 §4.4：「以『模型参考价 + 玩家净需求失衡调整』产生单一成交价」。
+   * 引擎给出的 `q.price` 即模型参考价（本 tick 的定价结果）；本函数再叠加
+   * **当轮挂单净需求**的调整量。注意与 `priceTick` 里的 `playerImpactLambda` 区分：
+   * 那个读的是 `netFlow`（**上一 tick 已成交流水**），竞价当轮挂单在本 tick 尚未成交，
+   * 因此必须在这里单独统计。两者互补，不重复计算。
+   *
+   * 调整量 = clamp(K × 净需求股数/adv, ±cap)，再按参考价换算到分；不消耗 RNG（可重放）。
+   */
   onAuctionClear(ctx: TickCtx, _kind: 'open' | 'close'): void {
     this.loadState(ctx.day);
     const tickFlow: Record<string, number> = {};
@@ -131,15 +141,55 @@ export class PlayerMatcher implements OrderMatcher, FlowProvider {
       `SELECT * FROM orders WHERE status='open' AND type='L' AND created_tick <= ?
        ORDER BY code ASC, created_tick ASC, id ASC`,
     ).all(ctx.globalTick) as OrderRow[];
+
+    // 先按 code 汇总当轮净需求（买 +、卖 −，单位股），再定该 code 的统一价。
+    const netDemand = new Map<string, number>();
+    for (const o of orders) {
+      const q = ctx.quotes.get(o.code);
+      if (q === undefined || q.status === 'delisted' || !this.crosses(o, q.price)) continue;
+      const sign = o.side === 'B' ? 1 : -1;
+      netDemand.set(o.code, (netDemand.get(o.code) ?? 0) + sign * (o.qty - o.filled));
+    }
+    const auctionPrice = new Map<string, number>();
+    for (const [code, net] of netDemand) {
+      const q = ctx.quotes.get(code)!;
+      auctionPrice.set(code, this.auctionClearPrice(ctx, code, q.price, net, q.limitUp, q.limitDown));
+    }
+
     for (const o of orders) {
       const q = ctx.quotes.get(o.code);
       if (q === undefined || q.status === 'delisted' || !this.crosses(o, q.price)) continue;
       // NPC 提供统一价对手方；不加市价滑点、不沿用连续竞价的钉板抽签。
       // fill 复用逐笔费用/剩余冻结封顶和 T+1 清算，不重复冻结已部分成交的单。
-      this.fill(ctx, o, q.price, tickFlow);
+      this.fill(ctx, o, auctionPrice.get(o.code) ?? q.price, tickFlow);
     }
     this.mem!.flow = tickFlow;
     this.persist();
+  }
+
+  /**
+   * 统一价 = 参考价 × exp(clamp(K × 净需求/单tick均量, ±cap))，取整到分并夹在涨跌停内。
+   * 净需求为 0 ⇒ 原样返回参考价（保证「无失衡则不动价」这一显式语义）。
+   *
+   * ⚠️ 分母用 **`adv / 1100`**（单 tick 典型成交量），不是 `adv` 本身。
+   * `adv` 是**日**均量（量级 1e8），而集合竞价是一天里的一次性集中撮合；
+   * 若直接用 `adv` 作分母，`K × net/adv` 恒在 1e-7 量级，调价四舍五入后**永远是 0**
+   * —— 功能表面实现、实际完全无效（这正是第一版的现象）。
+   * `adv / 1100` 与 `priceTick` 的 `playerImpactLambda`、单 tick 成交量口径一致
+   * （见 `engine/pricing.ts`：`vol = adv/1100 × …`、`rPlayer = λ × netFlow/adv`…
+   * 后者分母用 adv 是因为它描述的是**当日累计净流**，而这里是**单轮竞价净需求**）。
+   */
+  private auctionClearPrice(ctx: TickCtx, code: string, ref: number, net: number,
+      limitUp: number, limitDown: number): number {
+    if (net === 0) return ref;
+    const adv = Math.max(1, (this.db.prepare('SELECT adv FROM stock_state WHERE code=?')
+      .get(code) as { adv: number }).adv);
+    const perTickVol = Math.max(1, adv / 1100);
+    const raw = this.cfg.trading.auctionImpactK * (net / perTickVol);
+    const cap = this.cfg.trading.auctionImpactCap;
+    const adj = Math.max(-cap, Math.min(cap, raw));
+    const p = Math.round(ref * Math.exp(adj));
+    return Math.max(1, Math.min(limitUp, Math.max(limitDown, p)));
   }
 
   /** 结算第一步：先清委托再解锁持仓；资金仍只通过只追加的复式账本变更。 */

@@ -290,3 +290,140 @@ describe('admin：engine / audit / config', () => {
     expect(res.json().code).toBe('CONFIG_KEY');
   });
 });
+
+// ---------- admin：删除测试账号 ----------
+
+describe('admin：DELETE /api/admin/users/:id（清理测试账号）', () => {
+  /** 造一个「干净」的测试账号：只有创世入账，无持仓无挂单。 */
+  async function freshUser(name: string, ip: string) {
+    return register(name, ip);
+  }
+
+  it('删除后：登录 401、管理员列表不再出现、audit 仍全绿', async () => {
+    const t = await freshUser('zztest1', '5.5.5.1');
+    const before = await app.inject({ method: 'GET', url: '/api/admin/audit', cookies: { sid: adminSid } });
+    expect(before.json().globalOk).toBe(true);
+
+    const del = await app.inject({ method: 'DELETE', url: `/api/admin/users/${t.id}`, cookies: { sid: adminSid } });
+    expect(del.statusCode).toBe(200);
+    expect(del.json().ok).toBe(true);
+
+    // 登录应失败（用户行已不存在）
+    const relog = await app.inject({ method: 'POST', url: '/api/auth/login',
+      payload: { username: 'zztest1', password: PASS } });
+    expect(relog.statusCode).toBe(401);
+
+    // 列表里不应再有
+    const list = await app.inject({ method: 'GET', url: '/api/admin/users?q=zztest1', cookies: { sid: adminSid } });
+    expect(list.json().users).toHaveLength(0);
+
+    // ⚠️ 关键：全局账本仍必须平衡（ledger 行保留、users 行删除 → 总额仍为 0）
+    const after = await app.inject({ method: 'GET', url: '/api/admin/audit', cookies: { sid: adminSid } });
+    expect(after.json().globalOk).toBe(true);
+    expect(after.json().usersOk).toBe(true);
+  });
+
+  it('⚠️ 持有未平仓订单的用户默认拒删（409 USER_HAS_STATE），需 force=true', async () => {
+    const t = await freshUser('zztest2', '5.5.5.2');
+    // 造一笔挂单：直接写库（不改动撮合逻辑）
+    db.prepare(`INSERT INTO orders(user_id, code, side, type, price, qty, client_key, day, created_tick)
+      SELECT ?, code, 'B', 'L', 100, 100, 'k1', 1, 0 FROM stocks LIMIT 1`).run(t.id);
+
+    const del = await app.inject({ method: 'DELETE', url: `/api/admin/users/${t.id}`, cookies: { sid: adminSid } });
+    expect(del.statusCode).toBe(409);
+    expect(del.json().code).toBe('USER_HAS_STATE');
+
+    const forced = await app.inject({ method: 'DELETE', url: `/api/admin/users/${t.id}?force=true`,
+      cookies: { sid: adminSid } });
+    expect(forced.statusCode).toBe(200);
+  });
+
+  it('⚠️ 不能删管理员自己；不能删系统账号', async () => {
+    const me = await app.inject({ method: 'GET', url: '/api/admin/users?q=root', cookies: { sid: adminSid } });
+    const myId = me.json().users[0].id as number;
+    const self = await app.inject({ method: 'DELETE', url: `/api/admin/users/${myId}`, cookies: { sid: adminSid } });
+    expect(self.statusCode).toBe(400);
+    expect(self.json().code).toBe('CANNOT_DELETE_ADMIN');
+
+    // 系统账号 @market 的 id 是 1，kind='system' → 不可删
+    const sys = await app.inject({ method: 'DELETE', url: '/api/admin/users/1', cookies: { sid: adminSid } });
+    expect(sys.statusCode).toBe(404);
+  });
+
+  it('不存在的用户 → 404', async () => {
+    const res = await app.inject({ method: 'DELETE', url: '/api/admin/users/99999', cookies: { sid: adminSid } });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('非管理员 → 403', async () => {
+    const res = await app.inject({ method: 'DELETE', url: `/api/admin/users/${aliceId}`, cookies: { sid: aliceSid } });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
+// ---------- admin：测试账号（不占真实注册名额） ----------
+
+describe('admin：测试账号不占 IP 注册名额', () => {
+  it('⚠️ 建测试账号后，同 IP 的真实注册名额不被消耗', async () => {
+    // 把名额压到 1：这样「真实注册 1 次就满」的边界最容易观察
+    await app.inject({ method: 'PUT', url: '/api/admin/config', cookies: { sid: adminSid },
+      payload: { key: 'auth.ipRegPerDay', value: 1 } });
+
+    // 用 7.7.7.7 建 3 个测试账号 —— 应当全部成功，且都不占名额
+    for (let i = 0; i < 3; i++) {
+      const r = await app.inject({ method: 'POST', url: '/api/admin/test-users', cookies: { sid: adminSid },
+        payload: { username: `zztu${i}`, password: PASS }, remoteAddress: '7.7.7.7' });
+      expect(r.statusCode).toBe(200);
+    }
+
+    // ⚠️ 关键：同 IP 的**真实**注册仍应有 1 个名额（名额没被测试账号吃掉）
+    const real = await app.inject({ method: 'POST', url: '/api/auth/register',
+      payload: { username: 'zztureal', password: PASS }, remoteAddress: '7.7.7.7' });
+    expect(real.statusCode).toBe(200);
+
+    // 再用掉第二个 → 超限
+    const over = await app.inject({ method: 'POST', url: '/api/auth/register',
+      payload: { username: 'zztureal2', password: PASS }, remoteAddress: '7.7.7.7' });
+    expect(over.statusCode).toBe(429);
+    expect(over.json().code).toBe('REG_LIMIT');
+  });
+
+  it('测试账号可被列出（reg_ip 带 test: 前缀）', async () => {
+    await app.inject({ method: 'POST', url: '/api/admin/test-users', cookies: { sid: adminSid },
+      payload: { username: 'zzlisted', password: PASS }, remoteAddress: '7.7.7.8' });
+    const res = await app.inject({ method: 'GET', url: '/api/admin/test-users', cookies: { sid: adminSid } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().users.map((u: { username: string }) => u.username)).toContain('zzlisted');
+  });
+
+  it('⚠️ 测试账号与真实账号走同一建号事务：初始资金一致、audit 全绿', async () => {
+    const r = await app.inject({ method: 'POST', url: '/api/admin/test-users', cookies: { sid: adminSid },
+      payload: { username: 'zzsame', password: PASS }, remoteAddress: '7.7.7.9' });
+    expect(r.statusCode).toBe(200);
+    const id = r.json().user.id as number;
+    const cash = db.prepare('SELECT cash_available c FROM users WHERE id = ?').get(id) as { c: number };
+    expect(cash.c).toBe(DEFAULTS.auth.initialCash);
+    // 六项能力已初始化
+    const ab = db.prepare('SELECT COUNT(*) c FROM abilities WHERE user_id = ?').get(id) as { c: number };
+    expect(ab.c).toBe(6);
+    // 账本仍平衡
+    const audit = await app.inject({ method: 'GET', url: '/api/admin/audit', cookies: { sid: adminSid } });
+    expect(audit.json().globalOk).toBe(true);
+    expect(audit.json().usersOk).toBe(true);
+  });
+
+  it('非管理员不能建测试账号', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/admin/test-users', cookies: { sid: aliceSid },
+      payload: { username: 'zznope', password: PASS } });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('用户名冲突 → 409 USERNAME_TAKEN（复用注册的约束语义）', async () => {
+    await app.inject({ method: 'POST', url: '/api/admin/test-users', cookies: { sid: adminSid },
+      payload: { username: 'zzdup', password: PASS }, remoteAddress: '7.7.7.10' });
+    const again = await app.inject({ method: 'POST', url: '/api/admin/test-users', cookies: { sid: adminSid },
+      payload: { username: 'zzdup', password: PASS }, remoteAddress: '7.7.7.10' });
+    expect(again.statusCode).toBe(409);
+    expect(again.json().code).toBe('USERNAME_TAKEN');
+  });
+});

@@ -13,6 +13,53 @@ const ABILITY_KINDS = ['EDU', 'CODE', 'FIN', 'FIT', 'COMM', 'DESIGN'] as const;
 
 export interface AuthDeps { db: DB; cfg: Config; now: () => number }
 
+/**
+ * 建号的核心事务：插 users 行 + 六项能力 + 创世入账 + 开会话。
+ *
+ * 抽出来是为了让**管理后台的测试账号接口**复用同一套逻辑 —— 否则「测试账号」
+ * 会走一条与真实注册不同的代码路径，两边迟早漂移（测试造出的账号状态与真实
+ * 玩家不一致，测出来的结论就不可信）。
+ *
+ * ⚠️ 入账方向必须与注册一致：`@market -initialCash` / `新用户 +initialCash`。
+ *    ledger 有 append-only 触发器，且 `auditGlobal` 要求总和恒为 0，
+ *    两边金额必须严格配对。
+ */
+export async function createUser(
+  db: DB, cfg: Config, nowMs: number,
+  opts: { username: string; password: string; regIp: string; markTest?: boolean },
+): Promise<{ userId: number; sid: string }> {
+  const pwdHash = await hash(opts.password); // argon2id 默认参数（事务外：hash 为异步）
+  const day = engineDay(db);
+  let userId = 0;
+  let sid = '';
+  try {
+    db.transaction(() => {
+      const r = db.prepare(`INSERT INTO users(username, pwd_hash, reg_ip, created_day, created_at)
+        VALUES (?,?,?,?,?)`).run(opts.username, pwdHash, opts.regIp, day, Math.floor(nowMs / 1000));
+      userId = Number(r.lastInsertRowid);
+      const insAb = db.prepare('INSERT INTO abilities(user_id, kind, level) VALUES (?,?,0)');
+      for (const kind of ABILITY_KINDS) insAb.run(userId, kind);
+      post(db, day, 0, 'genesis', userId, [
+        { account: ACC.MARKET, bucket: 'A', amount: -cfg.auth.initialCash, kind: 'GENESIS' },
+        { account: userId, bucket: 'A', amount: cfg.auth.initialCash, kind: 'GENESIS' },
+      ]);
+      sid = newSession(db, userId, nowMs, cfg.auth.sessionDays);
+      // 测试账号打标记：便于日后一键清理，且不占真实注册名额的语义更明确
+      if (opts.markTest === true) {
+        db.prepare("UPDATE users SET reg_ip = ? WHERE id = ?").run(`test:${opts.regIp}`, userId);
+      }
+    })();
+  } catch (e) {
+    const code = (e as { code?: string }).code;
+    if (typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT')) {
+      throw new AppError('USERNAME_TAKEN', 409, 'username already taken');
+    }
+    throw e;
+  }
+  return { userId, sid };
+}
+
+
 function newSession(db: DB, userId: number, nowMs: number, sessionDays: number): string {
   const sid = randomBytes(32).toString('hex');
   db.prepare('INSERT INTO sessions(id, user_id, expires_at, created_at) VALUES (?,?,?,?)')
@@ -60,30 +107,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthDeps): 
         .get(ip, dayStartSec, dayStartSec + 86_400) as { c: number }).c;
       if (cnt >= cfg.auth.ipRegPerDay) throw new AppError('REG_LIMIT', 429, 'too many registrations from this IP today');
 
-      const pwdHash = await hash(password); // argon2id 默认参数（事务外：hash 为异步）
-      const day = engineDay(db);
-      let userId = 0;
-      let sid = '';
-      try {
-        db.transaction(() => {
-          const r = db.prepare(`INSERT INTO users(username, pwd_hash, reg_ip, created_day, created_at)
-            VALUES (?,?,?,?,?)`).run(username, pwdHash, ip, day, Math.floor(t / 1000));
-          userId = Number(r.lastInsertRowid);
-          const insAb = db.prepare('INSERT INTO abilities(user_id, kind, level) VALUES (?,?,0)');
-          for (const kind of ABILITY_KINDS) insAb.run(userId, kind);
-          post(db, day, 0, 'genesis', userId, [
-            { account: ACC.MARKET, bucket: 'A', amount: -cfg.auth.initialCash, kind: 'GENESIS' },
-            { account: userId, bucket: 'A', amount: cfg.auth.initialCash, kind: 'GENESIS' },
-          ]);
-          sid = newSession(db, userId, t, cfg.auth.sessionDays);
-        })();
-      } catch (e) {
-        const code = (e as { code?: string }).code;
-        if (typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT')) {
-          throw new AppError('USERNAME_TAKEN', 409, 'username already taken');
-        }
-        throw e;
-      }
+      const { userId, sid } = await createUser(db, cfg, t, { username, password, regIp: ip });
       setSidCookie(reply, sid, cfg.auth.sessionDays);
       return { user: userView(db, userId) };
     });

@@ -211,6 +211,52 @@ describe('courseCostOf：费用表精确 10 值与总和', () => {
     expect(() => enrollCourse(db, cfg, clock, msAtGmin(0), uid, 'FIN'))
       .toThrowError(/max level|COURSE_MAX/i);
   });
+
+  // ⚠️ 曾经的 bug：abilities.level 只在课程**结业**时才 +1，而 enrollCourse 用
+  // abilities.level 判级。于是结业前连点 N 次 → 每次都读到同一 level、收同一份钱、
+  // 堆 N 个 concurrency 的 active 报名，结业时各自把 level 从同一 from_level 抬到 +1。
+  // 玩家只用一份学费就刷满了等级。以下三条把该行为钉死。
+  it('⚠️ 同一能力已有在读课程 → 再次报名必须被拒（409 COURSE_IN_PROGRESS）', () => {
+    enrollCourse(db, cfg, clock, msAtGmin(0), uid, 'FIN');
+    expect(() => enrollCourse(db, cfg, clock, msAtGmin(0), uid, 'FIN'))
+      .toThrowError(/in progress|COURSE_IN_PROGRESS/i);
+  });
+
+  it('⚠️ 连点 5 次只扣 1 次费用，且只留 1 条 active 报名', () => {
+    const before = (db.prepare('SELECT cash_available a FROM users WHERE id = ?').get(uid) as
+      { a: number }).a;
+    let ok = 0;
+    for (let i = 0; i < 5; i++) {
+      try { enrollCourse(db, cfg, clock, msAtGmin(0), uid, 'FIN'); ok++; } catch { /* 预期被拒 */ }
+    }
+    expect(ok).toBe(1);
+    const cost = courseCostOf(cfg, 0);
+    const after = (db.prepare('SELECT cash_available a FROM users WHERE id = ?').get(uid) as
+      { a: number }).a;
+    expect(after).toBe(before - cost);   // 不是 before - cost*5
+    const act = (db.prepare(`SELECT COUNT(*) c FROM enrollments
+      WHERE user_id = ? AND kind = 'FIN' AND status = 'active'`).get(uid) as { c: number }).c;
+    expect(act).toBe(1);
+  });
+
+  it('⚠️ 结业后等级只 +1（不会因重复报名一次跳多级）', () => {
+    for (let i = 0; i < 3; i++) {
+      try { enrollCourse(db, cfg, clock, msAtGmin(0), uid, 'FIN'); } catch { /* ignore */ }
+    }
+    processDueForUser(db, cfg, clock, msAtGmin(500), uid);
+    expect(abilityLevels(db, uid)['FIN']).toBe(1);
+  });
+
+  it('⚠️ 不同能力可并行报名（限制只针对同一 kind）', () => {
+    // 同一时刻只能做一件事由 busyUntil 保证，但"已在读"的判定不应误伤别的能力。
+    // 这里只断言：FIN 在读时，报 CODE 不会因"有课在读"被拒（会排在 FIN 之后）。
+    enrollCourse(db, cfg, clock, msAtGmin(0), uid, 'FIN');
+    const id = enrollCourse(db, cfg, clock, msAtGmin(0), uid, 'CODE');
+    const e = db.prepare('SELECT kind, start_gmin FROM enrollments WHERE id = ?').get(id) as
+      { kind: string; start_gmin: number };
+    expect(e.kind).toBe('CODE');
+    expect(e.start_gmin).toBe(480);   // 排在 FIN 之后，不是拒绝
+  });
 });
 
 // ---------- 惰性结转与结算钩子 ----------

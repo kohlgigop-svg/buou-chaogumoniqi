@@ -69,18 +69,19 @@ describe('register', () => {
     const m = await me(cookie.value);
     expect(m.statusCode).toBe(200);
     expect(m.json().user).toMatchObject({ id: uid, username: 'alice', credit: 600, isAdmin: false, bankruptCount: 0 });
-    // GENESIS ledger：用户一条 +10_000_000，MARKET 对应 -10_000_000
+    // GENESIS ledger：用户一条 +initialCash，MARKET 对应 -initialCash
+    const CASH = DEFAULTS.auth.initialCash;
     const rows = db.prepare(`SELECT amount, bucket, day FROM ledger WHERE user_id=? AND kind='GENESIS'`).all(uid) as
       { amount: number; bucket: string; day: number }[];
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ amount: 10_000_000, bucket: 'A', day: 1 });
+    expect(rows[0]).toMatchObject({ amount: CASH, bucket: 'A', day: 1 });
     const mkt = db.prepare(`SELECT amount FROM ledger WHERE user_id=? AND kind='GENESIS'`).all(ACC.MARKET) as { amount: number }[];
     expect(mkt).toHaveLength(1);
-    expect(mkt[0]!.amount).toBe(-10_000_000);
+    expect(mkt[0]!.amount).toBe(-CASH);
     // 现金余额与用户行
     const u = db.prepare('SELECT cash_available a, cash_frozen f, created_day cd, reg_ip FROM users WHERE id=?').get(uid) as
       { a: number; f: number; cd: number; reg_ip: string };
-    expect(u.a).toBe(10_000_000);
+    expect(u.a).toBe(CASH);
     expect(u.f).toBe(0);
     expect(u.cd).toBe(1);
     expect(u.reg_ip).toBe('1.1.1.1');

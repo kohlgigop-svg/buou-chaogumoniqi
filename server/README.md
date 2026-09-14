@@ -133,3 +133,10 @@ docker run --rm -p 8080:8080 \
 > ⚠️ 分母必须是 `adv/1100`（单 tick 典型均量，与 `engine/pricing.ts` 同口径）——
 > 用 `adv` 本身会让调整量小到被 `Math.round` 抹平，表现为"实现了但完全不生效"。
 > 由 `test/trading/auction.test.ts` 的 7 项锁住，且不消耗撮合 RNG（回放确定性不受影响）。
+>
+> ⚠️ **玩家稀疏性**：本游戏玩家数量远少于现实市场（数十人 vs 亿级账户），冲击系数必须
+> 补偿这一稀疏性。`auctionImpactK` / `playerImpactLambda` 均为 **8**（原 0.8），
+> `auctionImpactCap` / `playerImpactCap` 均为 **5%**（原 3%）。取 0.8 时，
+> 一次全仓买入在大盘股（`601389`，`adv = 7.5e8`）上的冲击约 `2e-4`，
+> `Math.round(price × exp(ret))` 对 ¥5.20 这类低价股**取整后恒等于原价** —— 玩家操作
+> 在盘面上完全不可见。见 `test/engine/pricing.test.ts` 的「玩家全仓买入必须产生可见价格位移」。

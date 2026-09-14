@@ -166,9 +166,22 @@ export function courseCostOf(cfg: Config, level: number): Cents {
 /**
  * 报名：level<maxLevel → 扣费 user→EMPLOYER（kind COURSE_FEE）→
  * start = max(now, busyUntil)、end = start + (level+1)×courseHoursPerLevel×60 → 写 enrollments。
+ *
+ * ⚠️ 必须查 `enrollments` 判"该能力是否已在读"，**不能只信 `abilities.level`**：
+ * `abilities.level` 只在**结业**时才 +1，所以结业前连点 N 次会读到同一个 level、
+ * 收同一份学费、堆 N 个 active 报名，结业时各自把 level 从同一 from_level 抬到 +1 ——
+ * 玩家用一份钱刷满等级（曾经的 bug，见 work.test.ts 的三条 ⚠️ 断言）。
+ * `from_level` 也用**最大未完成级别**推导，保证并发报名不可能重复同一级。
  */
 export function enrollCourse(db: DB, cfg: Config, clock: GameClock, nowMs: number,
     userId: number, ability: AbilityKind): number {
+  // 该能力所有未结业的报名占用的级别（active 的 from_level）。
+  const pending = db.prepare(`SELECT from_level lv FROM enrollments
+    WHERE user_id = ? AND kind = ? AND status = 'active'`).all(userId, ability) as { lv: number }[];
+  if (pending.length > 0) {
+    throw new AppError('COURSE_IN_PROGRESS', 409, `${ability} course already in progress`);
+  }
+
   const levels = abilityLevels(db, userId);
   const level = levels[ability] ?? 0;
   if (level >= cfg.work.maxLevel) throw new AppError('COURSE_MAX', 409, 'max level reached');
@@ -183,6 +196,10 @@ export function enrollCourse(db: DB, cfg: Config, clock: GameClock, nowMs: numbe
 
   let id = 0;
   db.transaction(() => {
+    // 事务内复查（双重检查）：两个并发请求可能都通过了上面的窗口期检查。
+    const again = db.prepare(`SELECT COUNT(*) c FROM enrollments
+      WHERE user_id = ? AND kind = ? AND status = 'active'`).get(userId, ability) as { c: number };
+    if (again.c > 0) throw new AppError('COURSE_IN_PROGRESS', 409, `${ability} course already in progress`);
     post(db, dayOfGmin(start), 0, 'course', 0, [
       { account: userId, bucket: 'A', amount: -cost, kind: 'COURSE_FEE' },
       { account: ACC.EMPLOYER, bucket: 'A', amount: cost, kind: 'COURSE_FEE' },

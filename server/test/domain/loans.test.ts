@@ -128,14 +128,16 @@ describe('borrow：门槛矩阵', () => {
 
   it('总杠杆约束取严：未偿本息 ≤ 净资产 × 分数/300', () => {
     setCredit(uid, 500);
-    // 净资产 ≈ ¥100,000 = 10_000_000 分；杠杆上限 = 10_000_000 × 500/300 = 16_666_666 分。
-    // 档位上限（¥20,000 = 2_000_000 分）比杠杆上限更严 → 杠杆这条在本例中不起作用。
-    // 用 600 分档（上限 ¥50,000 = 5_000_000）制造杠杆先触发的场景：把现金花掉推低净资产。
-    // 花掉 ¥90,000 → 净资产 ≈ 1_000_000 分；杠杆上限 = 1_000_000 × 600/300 = 2_000_000 分。
+    // 杠杆上限 = 净资产 × 分数/300。用 600 分档制造杠杆先触发的场景：
+    // 把现金花掉推低净资产，令杠杆上限低于档位上限（¥50,000 = 5_000_000 分）。
     setCredit(uid, 600);
+    // 花掉绝大部分现金 → 净资产压到只剩 1_000_000 分；杠杆上限 = 1_000_000 × 600/300 = 2_000_000 分。
+    // ⚠️ 用 initialCash 推导，不要写死 ¥90,000 —— 初始资金是配置项，写死会在调整时静默失配。
+    const spendDownTo = 1_000_000;
+    const spend = DEFAULTS.auth.initialCash - spendDownTo;
     post(db, 1, 0, 'spend', uid, [
-      { account: uid, bucket: 'A', amount: -9_000_000, kind: 'TEST_SPEND' },
-      { account: ACC.MARKET, bucket: 'A', amount: 9_000_000, kind: 'TEST_SPEND' },
+      { account: uid, bucket: 'A', amount: -spend, kind: 'TEST_SPEND' },
+      { account: ACC.MARKET, bucket: 'A', amount: spend, kind: 'TEST_SPEND' },
     ]);
     expect(() => borrow(db, cfg, engine, uid, 2_100_000, 20)).toThrowError(/exceeds leverage cap/);
     expect(borrow(db, cfg, engine, uid, 1_500_000, 20)).toBeGreaterThan(0);
@@ -146,9 +148,15 @@ describe('borrow：门槛矩阵', () => {
     // 先在净资产为正时正常借出一笔，再人为把未偿本息抬高到超过全部资产，
     // 制造"净资产为负"（规格允许持仓亏损后净资产转负，此时唯一出路是逾期强平/破产）。
     const l = borrow(db, cfg, engine, uid, 1_000_000, 20);
-    db.prepare('UPDATE loans SET outstanding = 12_000_000 WHERE id = ?').run(l);
+    // 未偿本息抬到"超过全部资产"即可 → 净资产为负；用 initialCash 推导，别写死。
+    const huge = DEFAULTS.auth.initialCash + 5_000_000;
+    db.prepare('UPDATE loans SET outstanding = ? WHERE id = ?').run(huge, l);
     expect(valuation(db, uid).totalAssets).toBeLessThan(0);
     // 修复前：净资产为负 → roundHalfUpDiv 收到负数被除数 → 抛 "bad dividend"（500/进程崩溃）
+    // 注意请求额要小到不触发 LOAN_LIMIT（档位剩余额度按未偿本金算，会被 huge 直接顶满），
+    // 但仍要走到净资产判断 —— 故先清掉本金占用、只留较大的"本息"制造负净资产。
+    db.prepare(`UPDATE loans SET outstanding = 0, accrued_interest = ? WHERE id = ?`).run(huge, l);
+    expect(valuation(db, uid).totalAssets).toBeLessThan(0);
     expect(() => borrow(db, cfg, engine, uid, 100_000, 20))
       .toThrowError(/net worth is not positive/);
   });
@@ -275,7 +283,8 @@ describe('破产结算', () => {
       VALUES (?, '002143', 'B', 'L', 460, 100, 0, ?, 'open', 61, 1, 'openk')`).run(uid, freeze);
     // 制造资不抵债：借款 ¥50,000 后，把手中可动用的现金几乎全部"花掉"（走 ledger，保持账实一致），
     // 只留 ¥50 现金 + 一个市值仅 ¥460 的低价持仓（清仓所得远不足以偿还本息）。
-    const spend = 10_000_000 + 5_000_000 - freeze - 5_000;
+    // ⚠️ 用 initialCash 推导；写死会在调整初始资金时静默失配（留下花不完的现金 → 不破产）。
+    const spend = DEFAULTS.auth.initialCash + 5_000_000 - freeze - 5_000;
     post(db, 1, 0, 'spend', uid, [
       { account: uid, bucket: 'A', amount: -spend, kind: 'TEST_SPEND' },
       { account: ACC.MARKET, bucket: 'A', amount: spend, kind: 'TEST_SPEND' },

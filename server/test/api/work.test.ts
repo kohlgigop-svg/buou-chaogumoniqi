@@ -101,11 +101,28 @@ describe('POST /api/courses/enroll', () => {
     expect(res.json().enrollmentId).toBeGreaterThan(0);
     const cash = (db.prepare('SELECT cash_available a FROM users WHERE id = ?').get(uid) as { a: number }).a;
     expect(cash).toBe(DEFAULTS.auth.initialCash - DEFAULTS.work.coursePrices[0]!);
+    // 结掉在读课程再拉满级，才能走到 COURSE_MAX 分支 ——
+    // 否则「已有课程在读」会先命中 COURSE_IN_PROGRESS（见下面那条专门用例）。
+    db.prepare(`UPDATE enrollments SET status = 'done' WHERE user_id = ? AND status = 'active'`).run(uid);
     setAbility('FIN', DEFAULTS.work.maxLevel);
     const res2 = await app.inject({ method: 'POST', url: '/api/courses/enroll', cookies: { sid },
       payload: { ability: 'FIN' } });
     expect(res2.statusCode).toBe(409);
     expect(res2.json().code).toBe('COURSE_MAX');
+  });
+
+  it('⚠️ 同一能力重复报名 → 409 COURSE_IN_PROGRESS（防连点刷级）', async () => {
+    const first = await app.inject({ method: 'POST', url: '/api/courses/enroll', cookies: { sid },
+      payload: { ability: 'FIN' } });
+    expect(first.statusCode).toBe(200);
+    const again = await app.inject({ method: 'POST', url: '/api/courses/enroll', cookies: { sid },
+      payload: { ability: 'FIN' } });
+    expect(again.statusCode).toBe(409);
+    expect(again.json().code).toBe('COURSE_IN_PROGRESS');
+    // 只扣了一次费
+    const n = (db.prepare(`SELECT COUNT(*) c FROM ledger WHERE user_id = ? AND kind = 'COURSE_FEE'`)
+      .get(uid) as { c: number }).c;
+    expect(n).toBe(1);
   });
 
   it('非法能力枚举 → 400 VALIDATION', async () => {

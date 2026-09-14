@@ -617,6 +617,13 @@ WS tick 是 `chgBp`（**基点，平盘 = 0**，`123`）。就地混用会把平
 若当初分母误用 `adv` 本身，此处会得到 `420`（被 round 抹平）。这条实证同时排除了
 「单元测试通过但成品无效」的可能。
 
+> ⚠️ **2026-09-14 参数变更（本节数值已过期，仅存档）**：玩家规模远小于现实市场，
+> `auctionImpactK: 0.8` / `playerImpactLambda: 0.8` 与 `cap = 3%` 会让玩家的买卖
+> 在取整后**完全不动价**（低价股 `round(price × exp(ret))` 恒等于原价）。
+> 现值为 `auctionImpactK = 8`、`auctionImpactCap = 5%`、`playerImpactLambda = 8`、
+> `playerImpactCap = 5%`。上表若按新参数重算，`raw = 8 × 0.358655 = 2.869`（仍 > cap），
+> 期望统一价 `round(420 × exp(0.05)) = 442`。结论（cap 生效、分母口径正确）不变。
+
 **② 前端实时行情在真实浏览器中生效**
 
 Chrome CDP（`--headless=new`，430×932 移动视口）连真实构建产物：

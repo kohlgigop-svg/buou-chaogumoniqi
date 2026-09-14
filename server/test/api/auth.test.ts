@@ -203,6 +203,22 @@ describe('sessions', () => {
     expect((await me(sid)).statusCode).toBe(401);
   });
 
+  /**
+   * ⚠️ 与 p2p accept 同一个坑：logout 不需要 body，前端不传 body。
+   * Chromium 会给空体 POST 带上 `Content-Type: application/json`，而 Fastify 默认
+   * JSON 解析器在「json content-type + 空 body」时抛错 → 500。
+   * 见 server/src/api/app.ts 里自定义 content-type 解析器的注释。
+   */
+  it('⚠️ logout 空 body 带 content-type: application/json 也必须成功（同 500 事故）', async () => {
+    const sid = sidOf(await register('frank2', '3.3.3.9'));
+    const out = await app.inject({
+      method: 'POST', url: '/api/auth/logout', cookies: { sid },
+      headers: { 'content-type': 'application/json' }, payload: '',
+    });
+    expect(out.statusCode).toBe(200);
+    expect((await me(sid)).statusCode).toBe(401);
+  });
+
   it('滑动续期：剩余 <15 天访问会重置为 30 天；过期 → 401', async () => {
     const sid = sidOf(await register('gina', '3.3.3.2'));
     nowMs += 20 * DAY_MS; // 剩 10 天 < 15 天

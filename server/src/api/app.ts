@@ -80,6 +80,39 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(cookie);
   await app.register(rateLimit, { global: true, max: 300, timeWindow: '1 minute' });
 
+  /**
+   * ⚠️⚠️ 必须覆盖默认的 JSON 解析器：Fastify 自带的那个在
+   * `content-type: application/json` **且 body 为空**时会抛
+   * `FastifyError: Body cannot be empty when content-type is set to 'application/json'`
+   * → 落到 errorHandler 变成 **500 INTERNAL**。
+   *
+   * 为什么非改不可：本仓有一批**不需要 body 的 POST**（`/api/auth/logout`、
+   * `/api/admin/users/:id/ban|unban`、`/api/p2p/loans/:id/accept|reject`），
+   * 前端 `api.post(path)` 不传 body。**Chromium 在这条路径上会带上
+   * `Content-Type: application/json`**（Node 的 fetch 不会），于是真实玩家点
+   * 「同意」必然 500 —— 而服务端测试用 `app.inject()` 直接调路由、
+   * 前端测试用 stub，**两端都绕过 HTTP 解析层**，所以全绿却线上必崩。
+   *
+   * 语义：空 body → `undefined`（让 zod 的默认值/可选字段生效）；
+   * 非空则照常 `JSON.parse`，非法 JSON 仍抛错（不掩盖真问题）。
+   */
+  app.addContentTypeParser(
+    'application/json',
+    { parseAs: 'string' },
+    (_req, body: string, done) => {
+      if (body === '' || body === undefined || body === null) return done(null, undefined);
+      try {
+        done(null, JSON.parse(body));
+      } catch (e) {
+        // 保留 Fastify 的错误语义：状态码 400 且带 code，便于客户端区分于 500
+        const err = e as Error & { statusCode?: number; code?: string };
+        err.statusCode = 400;
+        err.code = 'FST_ERR_CTP_INVALID_JSON_BODY';
+        done(err, undefined);
+      }
+    },
+  );
+
   app.setErrorHandler((err, req, reply) => {
     if (err instanceof ZodError) {
       return reply.status(400).send({ code: 'VALIDATION', message: err.issues[0]?.message ?? 'invalid input' });
@@ -89,6 +122,12 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     }
     if ((err as { statusCode?: number }).statusCode === 429) { // @fastify/rate-limit 兜底带
       return reply.status(429).send({ code: 'RATE_LIMIT', message: (err as Error).message });
+    }
+    // 请求体本身有问题（非法 JSON 等）→ 400，不要报成 500 让用户以为服务挂了
+    const sc = (err as { statusCode?: number }).statusCode;
+    const ec = (err as { code?: string }).code;
+    if (typeof sc === 'number' && sc >= 400 && sc < 500 && ec?.startsWith('FST_ERR_CTP')) {
+      return reply.status(400).send({ code: 'VALIDATION', message: (err as Error).message });
     }
     req.log.error(err);
     return reply.status(500).send({ code: 'INTERNAL', message: 'internal error' });

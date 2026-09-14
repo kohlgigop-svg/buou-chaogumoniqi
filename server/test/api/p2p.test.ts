@@ -148,6 +148,50 @@ describe('POST /api/p2p/loans/:id/accept（生效）', () => {
     expect(again.statusCode).toBe(409);
     expect(again.json().code).toBe('P2P_NOT_PENDING');
   });
+
+  /**
+   * ⚠️⚠️ 这条测试是**线上 500 事故**的回归防线，不要删。
+   *
+   * 背景：`accept` / `reject` 不需要请求体，前端 `api.post(path)` 不传 body。
+   * 但 **Chromium 在这条路径上会带 `Content-Type: application/json`**（Node 的
+   * fetch 不带），而 Fastify 默认 JSON 解析器在「content-type 是 json 且 body 为空」
+   * 时抛 `Body cannot be empty...` → 500 INTERNAL。真实玩家点「同意」必崩。
+   *
+   * 为什么原有测试抓不到：`app.inject({ url })` **不带 `payload` 时不会设置
+   * content-type**，正好绕开了那个分支；前端测试又用 stub，同样绕开。
+   * 所以必须显式构造「带 json content-type + 空 body」这一形态。
+   */
+  it('⚠️ 空 body 但带 content-type: application/json 也必须成功（线上 500 回归）', async () => {
+    const id = await proposeAB();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/p2p/loans/${id}/accept`,
+      cookies: { sid: sidA },
+      headers: { 'content-type': 'application/json' },
+      payload: '',            // ⚠️ 关键：空 body（浏览器空体 POST 的真实形态）
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().loans[0].status).toBe('active');
+  });
+
+  it('⚠️ 不带 content-type 的空体请求同样成功（两种客户端形态都要兼容）', async () => {
+    const id = await proposeAB();
+    const res = await app.inject({
+      method: 'POST', url: `/api/p2p/loans/${id}/accept`, cookies: { sid: sidA },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('非法 JSON 仍应 400（新增的解析器不能把错误吞成 200）', async () => {
+    const id = await proposeAB();
+    const res = await app.inject({
+      method: 'POST', url: `/api/p2p/loans/${id}/accept`,
+      cookies: { sid: sidA },
+      headers: { 'content-type': 'application/json' },
+      payload: '{not json',
+    });
+    expect(res.statusCode).toBe(400);
+  });
 });
 
 describe('POST /api/p2p/loans/:id/reject 与 repay', () => {

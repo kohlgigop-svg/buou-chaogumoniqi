@@ -186,6 +186,42 @@ T+1 是规格 §5「照搬 A 股」的核心规则之一，且**服务端拒绝*
 
 ## 5. 部署 runbook（待用户执行）
 
+### 5.0 部署链路预演（2026-09-14，本机无 Docker 时的等价复刻）
+
+接到 Zeabur API Key 后，在真正建服务之前，先**在干净快照上把 Dockerfile 的每一步逐条跑了一遍**，
+目的只有一个：把「本机没 Docker、Dockerfile 从未在真机验证过」这个最大未知量压掉。
+
+做法：`git archive HEAD` 导出仅含入库文件的快照（1.9 MB，与 `.dockerignore` 的预期一致，
+证明上下文瘦身生效），然后按 Dockerfile 顺序执行。
+
+| # | Dockerfile 步骤 | 复刻结果 |
+|---|---|---|
+| 1 | `COPY package.json …` + `npm ci` | ✅ 290 包装成（本机 9m21s） |
+| 2 | `npm run build` | ✅ 34s；产物 `index-BazLe92Q.js`(532926B) / `index-DOLpFveW.css`(35494B)，与 plan-b 一致 |
+| 3 | `npm prune --omit=dev` | ✅ 移除 162 包；`typescript`/`vitest`/`tsx` 确已消失 |
+| 4 | **prune 后 workspace 软链是否存活** | ✅ **存活**（Dockerfile 第 48 行的假设成立） |
+| 5 | 软链重建为相对路径 | ✅ `@pt/shared` 解析到 `<root>/shared/dist/index.js`（构建产物，**不是** `.ts` 源码） |
+| 6 | 8 个生产依赖完整性 | ✅ fastify / better-sqlite3 / @fastify/{static,websocket,cookie,rate-limit} / @node-rs/argon2 / zod 全部就位 |
+| 7 | **裁剪后实际启动服务** | ✅ `node server/dist/index.js` 起来了 |
+| 8 | `/healthz` | ✅ `{"ok":true,"day":1,"lastTick":3}` |
+| 9 | SPA fallback `/market` | ✅ `200 text/html` |
+| 10 | `/api/nonexistent` | ✅ `{"code":"NOT_FOUND",…}` JSON 信封 |
+| 11 | 静态资源字节数 | ✅ 532926 / 35494，与构建产物逐字节一致 |
+| 12 | `DATA_DIR` 可写 | ✅ `game.db` + `-wal` + `-shm` 正常创建（印证 Dockerfile 第 64 行 `/data` 必须归 node 所有） |
+| 13 | 完整业务链路 | ✅ 注册返回用户对象、登录下发 `HttpOnly; Secure; SameSite=Lax` 会话 cookie |
+
+**结论**：Dockerfile 的每一条关键假设都经受住了实测，**尤其是两处最容易翻车的**——
+① `npm prune` 不会打断 workspace 软链；② 相对软链重建后 Node 会解析到 `dist` 而非宿主机的 `.ts` 源码。
+
+**顺带确认的 npm 11 行为（此前存疑）**：`npm ci` 输出的
+`allow-scripts … not yet covered` 警告**不会跳过 install 脚本**。用决定性实验验证：
+删掉 `better-sqlite3/build/` 后跑 `npm rebuild`，`.node` 二进制被**正常重建**。
+故**不可**加 `ignore-scripts=true`（那才会让原生模块缺失、容器启动即崩）。
+
+**由本轮验证触发的一处加固**（提交 `f85f5f1`）：依赖安装是全链路最慢最脆的一步，
+显式加大重试与超时（`--fetch-retries=5 --fetch-retry-maxtimeout=120000 --fetch-timeout=600000`），
+避免网络抖动直接毁掉整次部署。
+
 ### 5.1 前置：需求方需要做的事（规格 §17）
 
 1. 注册 Zeabur 账号（GitHub 或邮箱登录）；
@@ -276,6 +312,29 @@ NODE_ENV=production
 
 本地改码 + 跑测试 → push → Zeabur 自动构建发布。
 停机窗口内错过的 tick 由引擎启动时**按时间差补跑**兜底（计划 B 已实现并验收）。
+
+### 5.5 Zeabur API 备忘（实测确认，供后续复用）
+
+Zeabur 的公开 API 是 **GraphQL**（`https://api.zeabur.com/graphql`），
+认证头 `Authorization: Bearer <API Key>`。以下为实测确认的调用要点：
+
+- 可用区域：`hkg1`(香港) / `tpe0`·`tpe1`(台北) / `sha1`(上海) / `hnd1`(东京) /
+  `sfo1`·`sjc1`(美西) / `fra1`(法兰克福) / `cgk1`(雅加达)。**择优取 `hkg1`**（离用户最近）。
+- `projects` 返回的是 **`ProjectConnection`**（要写 `edges { node { … } }`，不能直接查字段）——
+  一开始按普通 list 写会得到 `Cannot query field "_id" on type "ProjectConnection"`。
+- 建服务走 **`createServiceFromArbitraryGit(projectID, name, gitURL, branch)`**：
+  只需 Git URL，**不需要** `repoID`（那是 `createService` 配合 GitHub OAuth 用的路径），
+  且 Dockerfile 会被自动识别，无需 `<template>`。
+- 环境变量逐个用 `createEnvironmentVariable(serviceID, environmentID, key, value)` 注入
+  （无批量版；`updateEnvironmentVariable` 收的是 `data` 映射，也可一次性改）。
+- 持久卷：`mountVolume(serviceID, id, dir)`，`dir` 填 **`/data`**。
+- 触发构建：`deploy(serviceID, environmentID)`；`ServiceStatus` 枚举为
+  `STARTING` / `BUILDING` / `RUNNING` / `CRASHED` / `PULL_FAILED` / `SUSPENDED` / `STOPPING` / `PENDING` / `UNKNOWN`。
+- ⚠️ `Project` **没有** `region` 之外的区域选择入口，区域只在 `createProject(name, region)` 时定，
+  **建成后不可迁**——所以区域必须一次选对。
+
+编排脚本：`E:\布偶\_zb_deploy.mjs`（本机工具目录，未入库），做「建项目 → 挂 Git → 注入变量
+→ 挂卷 → 触发部署」四步，并生成 64 位十六进制随机 `MASTER_SEED`。
 
 ---
 

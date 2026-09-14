@@ -26,7 +26,7 @@
 | 数据库 | `./_acc.db`（临时，验收后删除） |
 | 随机种子 | `MASTER_SEED=20260911` |
 | 创世时刻 | `GENESIS_TS="$(date -u -d '3 hours ago' +%s)000"`（保证引擎已推进若干游戏日，便于观察 T+1） |
-| 管理员 | `ADMIN_USER=admin` / `ADMIN_PASSWORD=admin12345` |
+| 管理员 | `ADMIN_USER=admin` / `ADMIN_PASSWORD=admin12345`（**仅本轮本地临时库，库已删、从未上线**；非任何环境的生产凭据） |
 | 浏览器 | 真实 Chrome `C:/Program Files/Google/Chrome/Application/chrome.exe`，`--headless=new` + CDP（零依赖，Node 内置 `WebSocket`/`fetch` 直连 DevTools 协议） |
 | 截图 | 19 张（清单见 §4；**临时产物，已清理**） |
 

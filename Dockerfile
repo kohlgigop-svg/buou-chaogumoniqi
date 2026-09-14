@@ -33,7 +33,21 @@ COPY server/package.json ./server/
 COPY web/package.json ./web/
 
 # `npm ci` 严格按 lockfile 安装（不解析、不升级），devDependencies 也要装 —— 构建需要 tsc / vite。
-RUN npm ci
+#
+# ⚠️ 依赖安装是本 Dockerfile 最慢、也最容易失败的一步（本机实测 9 分钟以上；
+#   Linux 下还要拉 better-sqlite3 / @node-rs/argon2 / esbuild 的 linux-x64 二进制）。
+#   网络抖动会让单次失败直接毁掉整次部署，故显式加大重试与超时：
+#   - `fetch-retries=5` + `fetch-retry-maxtimeout=120000`：默认 2 次重试/60s 超时偏紧；
+#   - `fetch-timeout=600000`：大二进制（better-sqlite3 ~2MB、esbuild ~10MB）在慢链路上易超时。
+#   构建层缓存（COPY 依赖清单在前、源码在后）保证依赖没变时不再重跑这一层。
+#
+# 关于 npm 11 的 `allow-scripts` 警告：它**不会**跳过 install 脚本（实测 `npm rebuild` 后
+#   better-sqlite3 的 `.node` 二进制被正常重建），只是提示可在 CI 中显式审批。
+#   故无需加 `--ignore-scripts` 或审批配置；加 `ignore-scripts=true` 反而会让原生模块缺失。
+RUN npm ci \
+      --fetch-retries=5 \
+      --fetch-retry-maxtimeout=120000 \
+      --fetch-timeout=600000
 
 # 拷源码与配置（node_modules / dist / data / *.db 已在 .dockerignore 里排除，
 # 否则宿主机的 dist 会盖掉下面的构建输出、宿主机 node_modules 会污染镜像 ABI）。

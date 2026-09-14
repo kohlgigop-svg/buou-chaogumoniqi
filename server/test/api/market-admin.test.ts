@@ -18,6 +18,12 @@ let adminSid: string;
 let aliceSid: string;
 let aliceId: number;
 
+/**
+ * 固定时钟：令游戏日内分钟 = 0（00:00），使「连排两班必然同日」成立，测试不受运行时刻影响。
+ * `busyUntil=0` ⇒ 第 1 班 00:00–08:00、第 2 班 08:00–16:00，都在同一游戏日内。
+ */
+const FIXED_NOW = GENESIS;
+
 async function register(username: string, ip: string): Promise<{ sid: string; id: number }> {
   const res = await app.inject({ method: 'POST', url: '/api/auth/register',
     payload: { username, password: PASS }, remoteAddress: ip });
@@ -28,7 +34,7 @@ async function register(username: string, ip: string): Promise<{ sid: string; id
 beforeEach(async () => {
   db = openDb(':memory:');
   const engine = new Engine({ db, cfg: DEFAULTS, masterSeed: 5, genesisMs: GENESIS });
-  app = await buildApp({ db, cfg: DEFAULTS, engine });
+  app = await buildApp({ db, cfg: DEFAULTS, engine, now: () => FIXED_NOW });
   // 管理员：直接置 is_admin 并登录
   const admin = await register('root', '9.9.9.9');
   db.prepare('UPDATE users SET is_admin = 1 WHERE id = ?').run(admin.id);
@@ -238,6 +244,13 @@ describe('admin：engine / audit / config', () => {
       payload: { key: 'work.shiftsPerDay', value: 1 } });
     expect(ok.statusCode).toBe(200);
     // 热生效：alice 排第 1 班成功，第 2 班即被拒
+    //
+    // ⚠️ 必须用【固定假时钟】，不能用真实 Date.now。
+    // `scheduleShift` 用 `start = max(nowGmin, busyUntil)`，第 2 班从第 1 班的**下班时刻**排起；
+    // 一班 8 游戏小时（480 gmin），若第 1 班跨过午夜，第 2 班就落进**下一个游戏日**，
+    // 而日上限查询按 `start_gmin` 算天 → 查到新的一天（0 班）→ 不会触发 SHIFT_CAP。
+    // 用真实时钟时，游戏日内分钟落在 [960, 1440)（约 1/3 的真实时段）就会失败 ——
+    // 历史上这被误判成 flaky。固定时钟落在日内 00:00 起算处即可稳定命中同日。
     const s1 = await app.inject({ method: 'POST', url: '/api/shifts', cookies: { sid: aliceSid },
       payload: { jobId: 1 } });
     expect(s1.statusCode).toBe(200);

@@ -64,7 +64,13 @@ interface SessionRow {
 }
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
-  const { db, cfg, engine } = deps;
+  const { db, engine } = deps;
+  // ⚠️ cfg 必须克隆：`PUT /api/admin/config` 会**原位改写**传入的 cfg 对象（见 admin.ts 的
+  // applyOverride，它按 "a.b.c" 逐层深入并直接赋值）。若不克隆，调用方传进来的对象
+  // —— 尤其是模块级的 `DEFAULTS` 单例 —— 会被永久污染，导致**跨测试、跨实例的状态泄漏**：
+  // 实测 admin.test 把 DEFAULTS.work.shiftsPerDay 从 2 改成 1 后，同一进程内后续用例
+  // 读到的仍是 1，谁先跑谁定调。`structuredClone` 深拷贝（cfg 是纯 JSON 数据，无函数）。
+  const cfg: Config = structuredClone(deps.cfg);
   const now = deps.now ?? Date.now;
   // GameClock：优先注入（测试控时），否则从 engine_state.genesis_ms 构造。
   const clock = deps.clock ?? new GameClock(

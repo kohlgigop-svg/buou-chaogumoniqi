@@ -3,14 +3,15 @@
 // 数据源：GET /stocks/:code（quote + reports + dividends + news + fundamental）
 //       + GET /stocks/:code/candles?type=tick|day
 //       + GET /me（可用资金、可卖量、当前相位所需）
-//       + GET /healthz（推导 phase —— WS 未接（Task 8）前用轮询式刷新）
+//       + GET /healthz（推导 phase）
+//       + WS tick（实时价叠加到 quote 上 —— REST 只给首屏快照，价格要实时）
 //
 // ⚠️ 本页只做「读取 + 下单」，不做撮合。**限价单只冻结不成交**（撮合属原计划 T5），
 // 故下单成功后持仓不会立刻变化，这是正确行为，界面上以「已冻结」提示说明。
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
-  authApi, marketApi, tradeApi, metaApi, gminFromHealth,
+  authApi, marketApi, tradeApi, metaApi,
   type MeView, type StockDetail, type CandlesResult,
 } from '../api.js';
 import { fmtMoney, fmtPct, fmtCompactMoney, fmtQty } from '../format.js';
@@ -22,6 +23,8 @@ import OrderPanel, { type OrderPhase, type OrderSubmit } from '../components/Ord
 import FinancePanel from '../components/FinancePanel.js';
 import CandleChart from '../components/CandleChart.js';
 import { errorText } from '../errors.js';
+import { useRealtimeQuotes } from '../lib/realtime.js';
+import { applyLiveQuote, liveOf } from '../lib/liveQuote.js';
 
 const TICKS_PER_DAY = 1200;
 
@@ -94,12 +97,24 @@ export default function Stock(): React.JSX.Element {
     [data, code],
   );
 
+  // ⚠️ hook 必须无条件调用（不能放在下面的 early return 之后），否则切股/加载态切换
+  // 会改变 hook 数量，触发 React 的 "Rendered fewer hooks than expected" 崩溃。
+  // 订阅本股代码：WS 只推订阅过的行，不订阅就永远收不到这一只。
+  //
+  // 「下单后要能收到成交」这件事**不需要额外订阅**：本页只要开着就一直持有该代码的
+  // 订阅；而用户离开本页后成交回报由 `AppShell` 里的 `FillToasts` 兜住（成交是异步的，
+  // 用户可能早就走了）。两处合起来覆盖了「成交后能收到提示」这条需求。
+  const codes = useMemo(() => (code === '' ? [] : [code]), [code]);
+  const quotes = useRealtimeQuotes(codes);
+
   if (loading) return <Spinner />;
   if (err !== null) return <ErrorBox error={err} onRetry={() => void load()} />;
   if (data === null) return <Spinner />;
 
   const { detail, me, phase } = data;
-  const q = detail.quote;
+  // 实时价叠加到快照上：REST 给首屏与全部静态字段（name/prevClose/涨跌停），
+  // WS 只给易变的 price/chgBp/volume。收不到实时价时 `applyLiveQuote` 原样返回快照。
+  const q = applyLiveQuote(detail.quote, liveOf(quotes, detail.quote.code));
   const tone = q.chgPct > 0 ? 'up' : q.chgPct < 0 ? 'down' : 'flat';
 
   async function submitOrder(o: OrderSubmit): Promise<void> {

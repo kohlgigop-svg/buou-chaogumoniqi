@@ -5,6 +5,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import TabBar from './TabBar.js';
+import { FillToasts } from './Toast.js';
 import { useSession } from '../session.js';
 import { useRealtime } from '../lib/realtime.js';
 
@@ -44,6 +45,8 @@ export default function AppShell({ latencyBadge, children }: AppShellProps): Rea
           : null}
       </header>
       <main className="appshell__main">{children ?? <Outlet />}</main>
+      {/* 成交通知跨页常驻：限价单是异步成交的，用户可能已离开个股页（规格 §4.4）。 */}
+      <FillToasts />
       <TabBar />
     </div>
   );

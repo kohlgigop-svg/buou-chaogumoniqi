@@ -1118,3 +1118,40 @@ body {
   flex: 0 0 auto; border: none; background: transparent; cursor: pointer;
   color: var(--text-muted); font-size: var(--fs-lg); line-height: 1;
 }
+
+/* —— 成交提示（filltoast）—— 与上面的 admin `toast` 是两套：这里的可堆叠、带明细。
+ * 位置在 TabBar 之上：底部 Tab 是固定层，提示压在它上面才不会被遮。 */
+.filltoast-host {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--tabbar-h) + var(--safe-bottom) + var(--sp-4));
+  z-index: 60;
+  display: flex; flex-direction: column-reverse; gap: var(--sp-2);
+  width: min(92vw, 420px);
+  /* 容器不吃点击：它横跨页底，若吃点击会挡住 TabBar 上方的可点区域；
+   * 条目自己重新打开 pointer-events。 */
+  pointer-events: none;
+}
+.filltoast {
+  pointer-events: auto;
+  display: flex; align-items: flex-start; gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border-strong); border-left-width: 3px;
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  font-size: var(--fs-sm);
+}
+/* 买用红、卖用绿（A 股惯例），与行情涨跌色一致，用户不必另学一套语义。 */
+.filltoast--up { border-left-color: var(--up); }
+.filltoast--down { border-left-color: var(--down); }
+.filltoast__title { font-weight: 600; color: var(--text); }
+.filltoast__detail {
+  flex: 1 1 auto; margin-top: 2px;
+  font-size: var(--fs-xs); color: var(--text-secondary);
+}
+.filltoast__close {
+  flex: 0 0 auto; border: none; background: transparent; cursor: pointer;
+  color: var(--text-muted); font-size: var(--fs-lg); line-height: 1;
+  padding: 0; margin-left: auto;
+}
+.filltoast__close:hover { color: var(--text); }

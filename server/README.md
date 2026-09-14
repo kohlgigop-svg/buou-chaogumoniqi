@@ -125,5 +125,11 @@ docker run --rm -p 8080:8080 \
 2. **`/api/admin/config` 的 value 未做逐键类型校验**：仅白名单前缀（`trading.`/`credit.`/`loans.`/`work.`）约束，写入值类型由运维自担；错误类型会在下次读取时暴露。
 3. **强平取价使用当日 tick 快照**（`ctx.quotes`）并以 `limit_down` 兜底；停牌/退市股在强平日无法卖出，持仓保留至可交易时。
 4. **备份为单文件 `day-N.db`（`VACUUM INTO`）**，无异地/增量；`/api/admin/backups` 仅列出与下载。
-5. **规格 §4.4「竞价当轮挂单净需求影响统一价」尚未实现**（V1 验收前需补齐）。
-6. **单进程单写者**：引擎 tick 与 HTTP 请求共享同一 SQLite 连接，勿多实例指向同一库文件。
+5. **单进程单写者**：引擎 tick 与 HTTP 请求共享同一 SQLite 连接，勿多实例指向同一库文件。
+
+> 规格 §4.4「竞价当轮挂单净需求影响统一价」**已实现**：`trading/matcher.ts` 的
+> `onAuctionClear` 先按 code 汇总当轮挂单净需求，再由 `auctionClearPrice` 在模型参考价上
+> 施加 `auctionImpactK × net/(adv/1100)` 的指数调整（夹在 `auctionImpactCap` 与涨跌停内）。
+> ⚠️ 分母必须是 `adv/1100`（单 tick 典型均量，与 `engine/pricing.ts` 同口径）——
+> 用 `adv` 本身会让调整量小到被 `Math.round` 抹平，表现为"实现了但完全不生效"。
+> 由 `test/trading/auction.test.ts` 的 7 项锁住，且不消耗撮合 RNG（回放确定性不受影响）。

@@ -45,7 +45,7 @@ export default function Register(): React.JSX.Element {
   return (
     <div className="auth">
       <h1 className="auth__brand">创建账号</h1>
-      <p className="auth__sub">初始资金 ¥100,000.00 · 虚拟盘</p>
+      <p className="auth__sub">初始资金 ¥1,000,000.00 · 虚拟盘</p>
       <form className="auth__form" onSubmit={onSubmit}>
         <label className="field">
           <span className="field__label">用户名</span>

@@ -12,14 +12,22 @@ import {
   backupDay,
   sortBackups,
   CONFIG_WHITELIST_PREFIXES,
+  CONFIG_WHITELIST_EXACT,
 } from '../src/pages/adminLogic.js';
 
-describe('config 白名单：只允许 trading./credit./loans./work.', () => {
-  it('四个合法前缀都通过', () => {
+describe('config 白名单：只允许 trading./credit./loans./work./auth.ipRegPerDay', () => {
+  it('五个合法键都通过', () => {
     expect(isHotReloadableKey('trading.slippageK')).toBe(true);
     expect(isHotReloadableKey('credit.start')).toBe(true);
     expect(isHotReloadableKey('loans.graceDays')).toBe(true);
     expect(isHotReloadableKey('work.shiftsPerDay')).toBe(true);
+    expect(isHotReloadableKey('auth.ipRegPerDay')).toBe(true);
+  });
+
+  it('⚠️ auth 节其余键仍必须被拦住（只放开 ipRegPerDay 这一个）', () => {
+    expect(isHotReloadableKey('auth.initialCash')).toBe(false);
+    expect(isHotReloadableKey('auth.loginLockN')).toBe(false);
+    expect(isHotReloadableKey('auth.ipRegPerDayX')).toBe(false);
   });
 
   it('⚠️ auth.sessionDays 必须被拦住（计划明确要求）', () => {
@@ -41,6 +49,10 @@ describe('config 白名单：只允许 trading./credit./loans./work.', () => {
 
   it('前缀与服务的白名单一致（防止前后端漂移）', () => {
     expect([...CONFIG_WHITELIST_PREFIXES]).toEqual(['trading.', 'credit.', 'loans.', 'work.']);
+  });
+
+  it('精确键白名单与服务的精确键一致', () => {
+    expect([...CONFIG_WHITELIST_EXACT]).toEqual(['auth.ipRegPerDay']);
   });
 });
 

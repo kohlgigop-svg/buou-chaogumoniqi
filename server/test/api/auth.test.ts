@@ -110,19 +110,35 @@ describe('register', () => {
     expect(res.json().code).toBe('VALIDATION');
   });
 
-  it('同 IP 同 UTC 日第 6 个 → 429 REG_LIMIT；次日恢复', async () => {
-    for (let i = 1; i <= 5; i++) {
+  it('⚠️ 路由兜底带必须高于业务上限，否则用户看不到 REG_LIMIT', async () => {
+    // 兜底带（@fastify/rate-limit，按 IP 每小时的硬上限）若 ≤ ipRegPerDay，
+    // 会在业务检查之前先抛 429 RATE_LIMIT：文案错（"请求过于频繁"而非"名额已用完"），
+    // 且把 ipRegPerDay 调高也不生效。这条断言把两者的顺序关系钉死。
+    const cap = DEFAULTS.auth.ipRegPerDay;
+    for (let i = 1; i <= cap; i++) {
+      expect((await register(`band${i}`, '7.7.7.7')).statusCode).toBe(200);
+    }
+    const over = await register(`band${cap + 1}`, '7.7.7.7');
+    expect(over.statusCode).toBe(429);
+    // 必须是业务码，不是限流码 —— 顺序错误时这里会拿到 RATE_LIMIT
+    expect(over.json().code).toBe('REG_LIMIT');
+  });
+
+  it('同 IP 同 UTC 日第 21 个 → 429 REG_LIMIT；次日恢复', async () => {
+    const cap = DEFAULTS.auth.ipRegPerDay;
+    expect(cap).toBe(20);
+    for (let i = 1; i <= cap; i++) {
       const r = await register(`ipuser${i}`, '9.9.9.9');
       expect(r.statusCode).toBe(200);
     }
-    const sixth = await register('ipuser6', '9.9.9.9');
-    expect(sixth.statusCode).toBe(429);
-    expect(sixth.json().code).toBe('REG_LIMIT');
+    const over = await register(`ipuser${cap + 1}`, '9.9.9.9');
+    expect(over.statusCode).toBe(429);
+    expect(over.json().code).toBe('REG_LIMIT');
     // 其他 IP 不受影响
     expect((await register('otherip', '9.9.9.8')).statusCode).toBe(200);
     // 跨过 UTC 日界后同 IP 恢复
     nowMs += DAY_MS;
-    expect((await register('ipuser6', '9.9.9.9')).statusCode).toBe(200);
+    expect((await register(`ipuser${cap + 1}`, '9.9.9.9')).statusCode).toBe(200);
   });
 });
 

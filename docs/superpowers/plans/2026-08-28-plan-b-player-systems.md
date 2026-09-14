@@ -53,7 +53,7 @@ server/test/ …（镜像）+ test/property/random-ops.test.ts + scripts/soak.ts
 
 ```ts
 trading: { marketBufferPct: 0.02; slippageK: 0.06; boardFillProb: 0.25; boardFillRatio: [0.1, 0.5] }
-auth:    { initialCash: 10_000_000; sessionDays: 30; ipRegPerDay: 5; loginLockN: 5; loginLockMin: 15 }
+auth:    { initialCash: 10_000_000; sessionDays: 30; ipRegPerDay: 20; loginLockN: 5; loginLockMin: 15 }
 credit:  { min: 350; max: 850; start: 600; repayOnTime: 15; repayEarly: 20; overduePerDay: -8;
            forcedLiq: -80; bankruptcyScore: 400; shiftPoint: 1; shiftCapPer20d: 10 }
 loans:   { termDays: [20, 60, 120]; graceDays: 3; penaltyMult: 2; liqOverdueDay: 10;
@@ -122,7 +122,8 @@ export function buildApp(deps: AppDeps): Promise<FastifyInstance>;
 // - decorate request.user（会话中间件：cookie sid → sessions 表 → users；过期/被踢→401 {code:'UNAUTHORIZED'}）
 export class AppError extends Error { constructor(public code: string, public status: number, message: string) }
 // auth.ts 路由：
-// POST /api/auth/register {username,password}：IP 限额（同 reg_ip 当日 UTC 注册数 ≥ cfg.auth.ipRegPerDay → 429 REG_LIMIT）；
+// POST /api/auth/register {username,password}：IP 限额（同 reg_ip 当日 UTC 注册数 ≥ cfg.auth.ipRegPerDay → 429 REG_LIMIT；
+//   ⚠️ 路由级 @fastify/rate-limit 兜底带必须 > ipRegPerDay，否则先抛 RATE_LIMIT，业务文案与调高配置都失效）；
 //   用户名唯一（409 USERNAME_TAKEN）；argon2id 哈希（@node-rs/argon2 默认参数）；
 //   事务内：INSERT users(credit=600, reg_ip, created_day=engine 当前 day) + 6 行 abilities(level 0)
 //   + post(GENESIS: MARKET→user, cfg.auth.initialCash)；自动登录（Set-Cookie）。

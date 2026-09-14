@@ -60,7 +60,7 @@ export const DEFAULTS: Config = {
   backupKeep: 7,
   trading: { marketBufferPct: 0.02, slippageK: 0.06, boardFillProb: 0.25, boardFillRatio: [0.1, 0.5],
     auctionImpactK: 0.8, auctionImpactCap: 0.03 },
-  auth: { initialCash: 10_000_000, sessionDays: 30, ipRegPerDay: 5, loginLockN: 5, loginLockMin: 15 },
+  auth: { initialCash: 10_000_000, sessionDays: 30, ipRegPerDay: 20, loginLockN: 5, loginLockMin: 15 },
   credit: { min: 350, max: 850, start: 600, repayOnTime: 15, repayEarly: 20, overduePerDay: -8,
     forcedLiq: -80, bankruptcyScore: 400, shiftPoint: 1, shiftCapPer20d: 10 },
   loans: { termDays: [20, 60, 120], graceDays: 3, penaltyMult: 2, liqOverdueDay: 10,

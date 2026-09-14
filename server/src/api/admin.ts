@@ -22,8 +22,17 @@ const AnnounceSchema = z.object({ content: z.string().min(1).max(500) });
 const ConfigPutSchema = z.object({ key: z.string().min(1), value: z.unknown() });
 const BackupFileSchema = z.object({ file: z.string().regex(/^day-\d+\.db$/) });
 
-/** 可热改的 config 白名单前缀。 */
+/** 前缀白名单（带点号，避免 `tradingX` 这类误匹配）。 */
 const CONFIG_WHITELIST = ['trading.', 'credit.', 'loans.', 'work.'];
+/**
+ * 精确键白名单（全等匹配）。
+ *
+ * 为什么不直接往上面加 `'auth.ipRegPerDay'`：白名单是 `startsWith` 匹配，
+ * 那样会派生放行 `auth.ipRegPerDayX` 这类不存在的键；而 `applyOverride` 对未知
+ * 路径是**静默 return**（不报错），于是接口返回「写入成功」但配置毫无变化。
+ * 故精确键单独判断。
+ */
+const CONFIG_WHITELIST_EXACT = ['auth.ipRegPerDay'];
 
 export async function registerAdminRoutes(app: FastifyInstance, deps: AdminDeps): Promise<void> {
   const { db, cfg, now, dataDir } = deps;
@@ -128,12 +137,12 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminDeps)
   }));
 
   /**
-   * config 热更新：仅白名单前缀键。写 config 表 override 并以 Object.assign 原位合并到进程 cfg
-   * （顶层节点共享引用，engine/matcher/work 即时可见）。
+   * config 热更新：仅白名单键（前缀 + 精确键两张表）。写 config 表 override 并以
+   * `applyOverride` 原位合并到进程 cfg（顶层节点共享引用，engine/matcher/work 即时可见）。
    */
   app.put('/api/admin/config', { preHandler: requireAdmin }, async (req) => {
     const { key, value } = ConfigPutSchema.parse(req.body);
-    if (!CONFIG_WHITELIST.some(p => key.startsWith(p))) {
+    if (!isWhitelistedKey(key)) {
       throw new AppError('CONFIG_KEY', 400, `key not in whitelist: ${key}`);
     }
     db.transaction(() => {
@@ -166,6 +175,12 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminDeps)
     reply.type('application/octet-stream');
     return reply.send(stream);
   });
+}
+
+/** 该 config 键是否允许热改：精确键全等，其余走路由前缀。 */
+function isWhitelistedKey(key: string): boolean {
+  if (CONFIG_WHITELIST_EXACT.includes(key)) return true;
+  return CONFIG_WHITELIST.some(p => key.startsWith(p));
 }
 
 /** 把 "a.b.c" 形式的 override 原位写入 cfg（顶层节点为对象时逐层深入）。 */

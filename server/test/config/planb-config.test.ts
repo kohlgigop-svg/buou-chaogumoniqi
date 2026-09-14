@@ -12,7 +12,7 @@ describe('plan-b config 扩展', () => {
   it('auth 节逐键精确', () => {
     expect(DEFAULTS.auth.initialCash).toBe(10_000_000);
     expect(DEFAULTS.auth.sessionDays).toBe(30);
-    expect(DEFAULTS.auth.ipRegPerDay).toBe(5);
+    expect(DEFAULTS.auth.ipRegPerDay).toBe(20);
     expect(DEFAULTS.auth.loginLockN).toBe(5);
     expect(DEFAULTS.auth.loginLockMin).toBe(15);
   });

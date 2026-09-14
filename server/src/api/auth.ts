@@ -37,8 +37,19 @@ function userView(db: DB, id: number): AuthUser {
 export async function registerAuthRoutes(app: FastifyInstance, deps: AuthDeps): Promise<void> {
   const { db, cfg, now } = deps;
 
+  /**
+   * ⚠️ 路由级兜底带**必须高于**业务上限 `cfg.auth.ipRegPerDay`，否则会在业务检查之前
+   * 先抛 `RATE_LIMIT` —— 用户看到的是「请求过于频繁」而不是「今日注册名额已用完」，
+   * 且把 `ipRegPerDay` 调高也不会生效（兜底带先拦住）。
+   *
+   * 这里取 60/hour：既是暴力注册的防护上限，也保证一天内任何低于它的
+   * `ipRegPerDay` 都由业务规则给出正确的 429 REG_LIMIT。
+   * 与 `ipRegPerDay` 的边界关系由 `auth.test.ts` 的「兜底带必须高于业务上限」锁住。
+   */
+  const REG_ROUTE_MAX_PER_HOUR = 60;
+
   app.post('/api/auth/register',
-    { config: { rateLimit: { max: 20, timeWindow: '1 hour' } } },  // 兜底带
+    { config: { rateLimit: { max: REG_ROUTE_MAX_PER_HOUR, timeWindow: '1 hour' } } },
     async (req, reply) => {
       const { username, password } = RegisterSchema.parse(req.body);
       const t = now();

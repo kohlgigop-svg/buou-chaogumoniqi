@@ -80,7 +80,8 @@ export default function ConfigPanel(): React.JSX.Element {
         <h3 className="apanel__sub">当前生效配置</h3>
         <p className="apanel__hint">
           白名单：仅 <code>{CONFIG_WHITELIST_PREFIXES.join(' / ')}</code> 开头的键可热改。
-          <code>auth.*</code>、<code>engine.*</code> 等需重启进程 —— 前端会先拦住，不浪费一次往返。
+          <code>auth.ipRegPerDay</code>（注册名额）亦可热改；其余 <code>auth.*</code>、
+          <code>engine.*</code> 等需重启进程 —— 前端会先拦住，不浪费一次往返。
         </p>
         <div className="cfg">
           {sections.map(sec => (

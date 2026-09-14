@@ -23,7 +23,7 @@ const ConfigPutSchema = z.object({ key: z.string().min(1), value: z.unknown() })
 const BackupFileSchema = z.object({ file: z.string().regex(/^day-\d+\.db$/) });
 
 /** 前缀白名单（带点号，避免 `tradingX` 这类误匹配）。 */
-const CONFIG_WHITELIST = ['trading.', 'credit.', 'loans.', 'work.'];
+const CONFIG_WHITELIST = ['trading.', 'credit.', 'loans.', 'work.', 'p2p.'];
 /**
  * 精确键白名单（全等匹配）。
  *
@@ -32,7 +32,13 @@ const CONFIG_WHITELIST = ['trading.', 'credit.', 'loans.', 'work.'];
  * 路径是**静默 return**（不报错），于是接口返回「写入成功」但配置毫无变化。
  * 故精确键单独判断。
  */
-const CONFIG_WHITELIST_EXACT = ['auth.ipRegPerDay'];
+const CONFIG_WHITELIST_EXACT = [
+  'auth.ipRegPerDay',
+  // 玩家价格冲击的两个键是**顶层**（不在 trading.* 下），故必须走精确键表。
+  // 这两个值是「玩家能不能推动盘面」的总开关，运营中调它俩比调 trading.* 更常用。
+  'playerImpactLambda',
+  'playerImpactCap',
+];
 
 export async function registerAdminRoutes(app: FastifyInstance, deps: AdminDeps): Promise<void> {
   const { db, cfg, now, dataDir } = deps;

@@ -259,4 +259,34 @@ describe('admin：engine / audit / config', () => {
     expect(s2.statusCode).toBe(429);
     expect(s2.json().code).toBe('SHIFT_CAP');
   });
+
+  it('⚠️ 玩家冲击参数可热改（顶层键，不在 trading.* 下）', async () => {
+    // 这两个键是「玩家能不能推动盘面」的总开关，运营中要能即时调 —— 若不在白名单里，
+    // 出错时只能改库重启，那就等于没有补救手段。
+    for (const key of ['playerImpactLambda', 'playerImpactCap']) {
+      const res = await app.inject({ method: 'PUT', url: '/api/admin/config', cookies: { sid: adminSid },
+        payload: { key, value: key === 'playerImpactLambda' ? 12 : 0.08 } });
+      expect(res.statusCode, key).toBe(200);
+    }
+    const snap = await app.inject({ method: 'GET', url: '/api/admin/config', cookies: { sid: adminSid } });
+    const cfg = snap.json().config as { playerImpactLambda: number; playerImpactCap: number };
+    expect(cfg.playerImpactLambda).toBe(12);
+    expect(cfg.playerImpactCap).toBe(0.08);
+  });
+
+  it('⚠️ P2P 条款边界可热改（p2p. 前缀）', async () => {
+    const res = await app.inject({ method: 'PUT', url: '/api/admin/config', cookies: { sid: adminSid },
+      payload: { key: 'p2p.maxTermDays', value: 60 } });
+    expect(res.statusCode).toBe(200);
+    // 热生效：边界立刻反映在公开的 limits 端点上
+    const limits = await app.inject({ method: 'GET', url: '/api/p2p/limits', cookies: { sid: aliceSid } });
+    expect(limits.json().maxTermDays).toBe(60);
+  });
+
+  it('白名单仍是白名单：auth.initialCash 之类的键依然被拒', async () => {
+    const res = await app.inject({ method: 'PUT', url: '/api/admin/config', cookies: { sid: adminSid },
+      payload: { key: 'auth.initialCash', value: 1 } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('CONFIG_KEY');
+  });
 });

@@ -819,6 +819,17 @@ DOM 与 Node 的定时器签名不兼容（Node 版带 `__promisify__`），注�
 `/market` 与 `/market/:code` 页面改用 `useRealtimeQuotes` 取实时价。
 `useFillFeed` 已在 `realtime.tsx` 中提供，但需要一个 toast 容器（Task 9 一并做）。
 
+> **✅ 已在「成品补完轮」闭合**（提交 `05b9c0b`）：
+> - `components/Toast.tsx` 新增 `FillToasts`（**不是**复用 `Confirm.tsx` 的 `Toast` ——
+>   那个是固定居中的单条胶囊，与可堆叠、带明细的成交提示布局诉求不同，
+>   故独立命名 `filltoast*` 以免样式互相覆盖）；挂在 **`AppShell`** 而非个股页，
+>   因为限价单异步成交、用户可能已离开个股页。
+> - `web/src/lib/liveQuote.ts` 作为 WS→REST 的叠加层（口径换算统一在此，
+>   指数只取涨跌不碰点位，缺实时价回落快照）；
+>   `Market.tsx` / `Stock.tsx` 接入 `useRealtimeQuotes`。
+> - 新增测试 3 文件：`liveQuote.test.ts`(19)、`toast.test.tsx`(19)、`live-quotes.test.tsx`(17)。
+>   web 全量至 **26 文件 / 601 项**。
+
 ---
 
 ## Task 9: 管理后台 `/admin` ✅ 已完成

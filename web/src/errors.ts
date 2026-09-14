@@ -45,6 +45,27 @@ const MESSAGES: Record<string, string> = {
   BAD_AMOUNT: '金额不合法',
   BAD_TERM: '期限不合法',
 
+  // —— 玩家间借贷（P2P）——
+  // 与银行贷款（LOAN_*）刻意分开：P2P 的槽点几乎都在「角色/状态/对手方」，不是「额度」。
+  // 每条都要能指向**下一步该做什么**，而不是笼统「不合法」：
+  //   P2P_PAIR_BUSY → 先去把和这个人的那笔结了；P2P_NOT_COUNTERPARTY → 这笔不该你点；
+  //   P2P_INSUFFICIENT_CASH → 出借方钱不够（也可能是我自己还款时余额不够）。
+  P2P_SELF: '不能与自己发生借贷',
+  P2P_NO_COUNTERPARTY: '对手方不存在',
+  P2P_AMOUNT_LIMIT: '超出单笔借款上限',
+  P2P_RATE_LIMIT: '约定的利息超出上限',
+  P2P_BAD_REPAY: '应还金额不得低于本金',
+  P2P_BAD_TERM: '还款周期不合法',
+  P2P_NOT_FOUND: '该借据不存在',
+  P2P_NOT_PARTY: '你不是这笔借据的一方',
+  P2P_NOT_COUNTERPARTY: '这笔借据正等对方确认，你不能操作',
+  P2P_NOT_PENDING: '该借据已不在待确认状态',
+  P2P_NOT_ACTIVE: '该借据尚未生效',
+  P2P_NOT_BORROWER: '只有借款方能主动还款',
+  P2P_PAIR_BUSY: '你们之间已有一笔未结清的借款',
+  P2P_INSUFFICIENT_CASH: '出借方可用资金不足',
+  P2P_CLOSED: '该笔借款已结清',
+
   // —— 打工与能力 ——
   JOB_NOT_FOUND: '职业不存在',
   JOB_REQUIREMENT: '能力或信誉未达标',
@@ -53,6 +74,7 @@ const MESSAGES: Record<string, string> = {
   SHIFT_STARTED: '班次已开始，无法取消',
   SHIFT_NOT_CANCELLABLE: '该班次不可取消',
   COURSE_MAX: '该项能力已满级',
+  COURSE_IN_PROGRESS: '该能力已有课程在读，请等结业后再报名',
 
   // —— 管理 ——
   CONFIG_KEY: '该配置项不可热改',

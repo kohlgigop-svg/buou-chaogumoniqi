@@ -73,6 +73,12 @@
   /* —— 布局 —— */
   --tabbar-h: 56px;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+  /* 内容区最大宽度：窄屏占满，宽屏收敛到可读行宽（--content-max）。
+     超过 --content-bp 后启用桌面侧栏布局（见文件末「响应式布局」段）。 */
+  --content-max: 560px;
+  --content-max-wide: 1680px;
+  --content-bp: 1024px;
+  --sidebar-w: 216px;
 }
 
 * { box-sizing: border-box; }
@@ -109,7 +115,10 @@ body {
 
 /* ============ 组件样式 ============ */
 
-/* —— 应用外壳 —— */
+/* —— 应用外壳 ——
+ * 宽度策略：内容区窄屏占满视口；≥ --content-bp 时改为「左侧导航 + 右侧内容」两栏，
+ * 内容随窗口伸展到 --content-max-wide（原先固定 max-width: 560px 在桌面上只用中间一小条）。
+ */
 .appshell { display: flex; flex-direction: column; min-height: 100%; }
 .appshell__header {
   position: sticky; top: 0; z-index: 10;
@@ -130,15 +139,28 @@ body {
 .appshell__latency--ok { color: var(--text-muted); background: var(--bg-hover); }
 .appshell__main {
   flex: 1;
-  width: 100%; max-width: 560px; margin: 0 auto;
+  width: 100%; max-width: var(--content-max); margin: 0 auto;
   padding: var(--sp-3) var(--sp-3) calc(var(--tabbar-h) + var(--safe-bottom) + var(--sp-3));
 }
+/* 桌面两栏骨架：侧栏 + 滚动内容区。TabBar 在宽屏下隐藏（导航移到侧栏）。 */
+.appshell__body { flex: 1; display: flex; min-height: 0; }
+.appshell__sidebar { display: none; }
+.appshell__navlink {
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3); margin-bottom: 2px;
+  border-radius: var(--r-md); color: var(--text-secondary);
+  text-decoration: none; font-size: var(--fs-sm);
+  transition: background .15s, color .15s;
+}
+.appshell__navlink:hover { background: var(--bg-hover); color: var(--text); }
+.appshell__navlink.active { background: var(--primary-dim); color: var(--primary); font-weight: 600; }
+.appshell__navicon { font-size: 17px; line-height: 1; width: 20px; text-align: center; }
 
 /* —— 底部 Tab —— */
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
   display: flex;
-  width: 100%; max-width: 560px; margin: 0 auto;
+  width: 100%; max-width: var(--content-max); margin: 0 auto;
   background: var(--bg-elevated); border-top: 1px solid var(--border);
   padding-bottom: calc(var(--sp-2) + var(--safe-bottom));
 }
@@ -1155,3 +1177,174 @@ body {
   padding: 0; margin-left: auto;
 }
 .filltoast__close:hover { color: var(--text); }
+
+/* ============ 响应式布局（桌面 / 宽屏） ============
+ * 手机优先：默认单栏 + 底部 TabBar。
+ * ≥ --content-bp 起改为「左侧导航 + 右侧内容」两栏，内容随窗口伸展；
+ * 导航固定不滚动，仅右侧内容区滚动 —— 长时间盯盘时导航始终可达。
+ */
+@media (min-width: 1024px) {
+  /* 顶部标题栏在桌面让位给侧栏品牌区，避免两处都显示站点名 */
+  .appshell__header { height: 44px; padding: 0 var(--sp-5); }
+  .appshell__header .appshell__title { color: var(--text-secondary); font-size: var(--fs-sm); }
+  .appshell__body { height: calc(100vh - 44px); }
+  .appshell__sidebar {
+    display: flex; flex-direction: column;
+    flex: 0 0 var(--sidebar-w); width: var(--sidebar-w);
+    padding: var(--sp-4) var(--sp-3);
+    background: var(--bg-elevated); border-right: 1px solid var(--border);
+    overflow-y: auto;
+  }
+  .appshell__main {
+    /* 桌面不用底部留白（TabBar 已隐藏），改为常规内边距 */
+    max-width: none; margin: 0;
+    padding: var(--sp-5);
+    overflow-y: auto;
+  }
+  /* 宽屏内容用多列网格铺开，并给整块内容一个上限宽度 ——
+     否则 2K/4K 下表格会拉成横跨整屏的长条，扫行时容易串行。
+     留白放在两侧（margin auto），而不是把卡片拉长。 */
+  .appshell__main > * { max-width: var(--content-max-wide); margin-inline: auto; }
+  /* 网格密度：窄屏 2 列在 1700px 宽下会变成两条超长空条。
+     宽屏改为**定宽列**（auto-fill + 固定 max），卡片保持紧凑；
+     整块网格再限制总宽并居中，避免四张卡片被摊到屏幕两端。 */
+  .home__grid,
+  .bank__stats,
+  .profile__grid {
+    grid-template-columns: repeat(auto-fill, minmax(200px, 240px));
+    justify-content: center;
+    max-width: 1080px;
+    margin-inline: auto;
+  }
+  .tabbar { display: none; }
+  /* toast 不再需要为 TabBar 让位 */
+  .toast { bottom: var(--sp-5); }
+}
+
+@media (min-width: 1024px) and (max-width: 1279px) {
+  :root { --sidebar-w: 184px; }
+}
+
+/* 超宽屏：内容区两侧留白收敛，避免行宽过长伤可读性 */
+@media (min-width: 1800px) {
+  :root { --content-max-wide: 1720px; }
+}
+
+/* ═══════════ 玩家间借贷（P2P） ═══════════ */
+/* 复用银行页的 .stat / .order__input / .badge / .bank__alert，
+   只在「角色选择」「对手方搜索」「条款预览」这三处新增样式 ——
+   那三处是 P2P 独有的交互，套银行页的结构会表达不出来。 */
+
+.p2p { display: block; }
+.p2p__stats {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--sp-2);
+}
+
+/* —— 角色切换（我要借钱 / 我要放贷） —— */
+.p2p__role {
+  display: flex; gap: 2px; margin-bottom: var(--sp-4);
+  background: var(--bg-raised); border-radius: var(--r-md);
+  padding: 3px; border: 1px solid var(--border);
+}
+.p2p__role-btn {
+  flex: 1; padding: var(--sp-2) var(--sp-3);
+  border: none; background: transparent; cursor: pointer;
+  border-radius: var(--r-sm); color: var(--text-secondary);
+  font-size: var(--fs-sm); font-family: inherit;
+}
+.p2p__role-btn.is-active {
+  background: var(--primary-dim); color: var(--primary); font-weight: 600;
+}
+
+/* —— 表单字段 —— */
+.p2p__field { display: block; margin-bottom: var(--sp-4); }
+.p2p__field-label {
+  display: block; margin-bottom: var(--sp-2);
+  font-size: var(--fs-sm); color: var(--text-secondary);
+}
+.p2p__field .order__input { width: 100%; }
+.p2p__grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--sp-3); }
+.p2p__grid .p2p__field { margin-bottom: 0; }
+
+/* —— 对手方搜索 —— */
+.p2p__searching { margin-top: var(--sp-1); font-size: var(--fs-xs); color: var(--text-muted); }
+.p2p__results { list-style: none; margin: var(--sp-2) 0 0; padding: 0; }
+.p2p__result {
+  display: flex; align-items: center; gap: var(--sp-2); width: 100%;
+  padding: var(--sp-2) var(--sp-3); margin-bottom: 2px;
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--r-sm); cursor: pointer;
+  font-family: inherit; font-size: var(--fs-sm); color: var(--text-primary);
+  text-align: left;
+}
+.p2p__result:hover { background: var(--bg-hover); }
+.p2p__result-name { font-weight: 600; }
+.p2p__result-credit { margin-left: auto; font-size: var(--fs-xs); color: var(--text-muted); }
+
+.p2p__picked {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--primary-dim); border-radius: var(--r-sm);
+}
+.p2p__picked-name { font-weight: 600; color: var(--primary); }
+.p2p__picked-credit { font-size: var(--fs-xs); color: var(--text-secondary); }
+.p2p__picked .btn { margin-left: auto; }
+
+/* —— 条款预览：把「应还」翻译成利率 —— */
+.p2p__preview {
+  display: flex; flex-wrap: wrap; gap: var(--sp-3);
+  margin-top: var(--sp-3); padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-raised); border-radius: var(--r-sm);
+  font-size: var(--fs-sm); color: var(--text-secondary);
+}
+.p2p__preview-warn { color: var(--warning); }
+.p2p__limits {
+  margin-top: var(--sp-3); font-size: var(--fs-xs);
+  color: var(--text-muted); line-height: 1.7;
+}
+.p2p__submit { margin-top: var(--sp-4); }
+.p2p__submit .btn { width: 100%; }
+
+/* —— 借据条目 —— */
+.p2plist { list-style: none; margin: 0; padding: 0; }
+.p2p__row, .p2plist > .p2p { padding: var(--sp-3) var(--sp-4); }
+.p2p__head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.p2p__id { font-weight: 600; }
+.p2p__from { margin-left: auto; font-size: var(--fs-xs); color: var(--text-muted); }
+.p2p__role-tag {
+  margin-left: auto; font-size: var(--fs-xs);
+  padding: 0 var(--sp-2); border-radius: var(--r-sm);
+  background: var(--bg-hover); color: var(--text-secondary);
+}
+.p2p__relation { margin-top: var(--sp-2); font-size: var(--fs-sm); line-height: 1.6; }
+.p2p__meta {
+  display: flex; flex-wrap: wrap; gap: var(--sp-3);
+  margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--text-muted);
+}
+.p2p__meta .warning { color: var(--warning); }
+.p2p__grid2 {
+  display: grid; grid-template-columns: auto 1fr; gap: 2px var(--sp-3);
+  margin-top: var(--sp-2); font-size: var(--fs-sm);
+}
+.p2p__k { color: var(--text-muted); font-size: var(--fs-xs); align-self: center; }
+.p2p__v { text-align: right; }
+.p2p__actions {
+  display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-3);
+}
+.p2p__actions .order__input { flex: 1; min-width: 0; }
+.p2p__waiting { margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--text-muted); }
+.p2p__notice { margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--up); }
+.p2p__notice--warn { color: var(--warning); }
+
+/* 状态色彩：与银行贷款同色系（危险红 / 警示橙 / 生效主色） */
+.p2p--active  { border-left: 3px solid var(--primary); }
+.p2p--warning { border-left: 3px solid var(--warning); }
+.p2p--danger  { border-left: 3px solid var(--up); background: var(--up-dim); }
+.p2p--flat    { border-left: 3px solid transparent; }
+.p2p--done    { border-left: 3px solid var(--down); }
+
+@media (max-width: 767px) {
+  /* 窄屏：三列条款会挤成看不懂的碎片，落回单列 */
+  .p2p__grid { grid-template-columns: 1fr; }
+  .p2p__stats { grid-template-columns: repeat(3, 1fr); }
+}

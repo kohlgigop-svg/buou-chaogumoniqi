@@ -211,6 +211,68 @@ export interface RepayResult {
 export interface CreditEvent { day: number; delta: number; reason: string; scoreAfter: number }
 export interface CreditView { credit: number; events: CreditEvent[] }
 
+// —— 玩家间借贷（P2P）——
+//
+// ⚠️ 与 NPC 银行贷款（`LoanRow`）**不是一套东西**，别把字段名互相套用：
+//   · 银行贷款有 `outstanding` / `accruedInterest`（利息逐日计提，会一直涨）；
+//   · P2P 是**双方谈定的固定应还额** `repayAmount`，没有「计提」概念，
+//     进度只能看 `repaid` / `owedTotal`（= repayAmount − repaid）。
+//   · `termDays` 是**谈定的游戏日**；`dueDay` 在生效（accept）前为 null。
+
+/** 潜在对手方。服务端**故意不回余额** —— 借钱前不该先看到别人有多少钱。 */
+export interface P2pPlayer { id: number; username: string; credit: number }
+
+/** 条款边界（表单 min/max 用，避免用户填了才被拒）。 */
+export interface P2pLimits {
+  /** 单笔本金上限（分）。 */
+  maxPrincipal: number;
+  /** 利率倍数区间：`repayAmount / principal` 的上下界。1.0 = 零息。 */
+  minRateMult: number; maxRateMult: number;
+  minTermDays: number; maxTermDays: number;
+  /** 到期后宽限天数（宽限内不扣信誉）。 */
+  graceDays: number;
+}
+
+export type P2pStatus = 'pending' | 'active' | 'repaid' | 'grace' | 'overdue'
+  | 'settled' | 'forgiven' | 'rejected' | 'cancelled';
+
+export interface P2pLoan {
+  id: number; borrowerId: number; borrowerName: string; lenderId: number; lenderName: string;
+  /** 本金（分）。 */
+  principal: number;
+  /** 谈定的应还总额（分）= 本金 + 利息。 */
+  repayAmount: number;
+  /** 已还（分）。 */
+  repaid: number;
+  /** 未偿余额（分）= repayAmount − repaid。 */
+  owedTotal: number;
+  termDays: number;
+  /** 谁发的起——决定「谁在等对方确认」的文案。 */
+  proposedBy: 'borrow' | 'lend';
+  awaitingId: number | null; awaitingName: string | null;
+  dayCreated: number;
+  /** 生效日 / 到期日；**pending 阶段均为 null**。 */
+  startDay: number | null; dueDay: number | null;
+  status: P2pStatus; note: string;
+  /** 我在本笔借据中的角色 —— 直接决定渲染「我要还」还是「等他还」。 */
+  myRole: 'borrower' | 'lender';
+  /** 距到期还有几个游戏日（未生效为 null；负数表示已超期）。 */
+  daysLeft: number | null;
+}
+
+export interface P2pLoansView {
+  loans: P2pLoan[];
+  /** 我欠其他玩家的（借款人视角，分）。 */
+  debt: number;
+  /** 其他玩家欠我的（出借人视角，分）。 */
+  credit: number;
+}
+
+export interface P2pProposeInput {
+  role: 'borrow' | 'lend'; counterpartyId: number;
+  principal: number; repayAmount: number; termDays: number; note?: string;
+}
+
 export interface JobRow {
   id: number; name: string; base_pay: number; min_credit: number | null;
   /**
@@ -277,6 +339,22 @@ export const bankApi = {
     api.post<RepayResult>(`/api/bank/loans/${id}/repay`, { amount }),
   loans: () => api.get<LoansView>('/api/bank/loans'),
   credit: () => api.get<CreditView>('/api/credit'),
+};
+
+export const p2pApi = {
+  /** 找对手方：按用户名模糊匹配（空串会被服务端 zod 拒，调用方须先判空）。 */
+  players: (q: string) => api.get<{ players: P2pPlayer[] }>('/api/p2p/players', { q }),
+  limits: () => api.get<P2pLimits>('/api/p2p/limits'),
+  loans: () => api.get<P2pLoansView>('/api/p2p/loans'),
+  /** 发起协商（**不划款**）。返回的 `id` 是借据号，`loans` 是最新列表。 */
+  propose: (input: P2pProposeInput) =>
+    api.post<{ id: number; loans: P2pLoan[] }>('/api/p2p/loans', input),
+  /** 对手方同意 —— 服务端在此刻才真正划款。 */
+  accept: (id: number) => api.post<{ loans: P2pLoan[] }>(`/api/p2p/loans/${id}/accept`),
+  /** 拒绝 / 撤回（无资金变动）。 */
+  reject: (id: number) => api.post<{ loans: P2pLoan[] }>(`/api/p2p/loans/${id}/reject`),
+  repay: (id: number, amount: number) =>
+    api.post<{ paid: number; closed: boolean; loans: P2pLoan[] }>(`/api/p2p/loans/${id}/repay`, { amount }),
 };
 
 export const workApi = {

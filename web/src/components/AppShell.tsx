@@ -1,13 +1,20 @@
-// components/AppShell.tsx —— 应用外壳：顶部标题栏 + 内容区 + 底部 TabBar。
+// components/AppShell.tsx —— 应用外壳：顶部标题栏 + （桌面）左侧导航 + 内容区 + 底部 TabBar。
+//
+// 布局宽度策略：
+//   · 窄屏（< 1024px）：单栏，内容占满视口宽，导航走底部 TabBar（手机优先）；
+//   · 宽屏（≥ 1024px）：两栏，左侧固定导航、右侧内容随窗口伸展，
+//     TabBar 隐藏（CSS 层 `@media (min-width: 1024px)` 里 `display: none`）。
+//   两套导航共用 `NAV_ITEMS`，不会出现项不一致。
 //
 // 延迟角标（Task 8）：行情有延迟时必须让用户看得见。默认从 `useRealtime()` 取，
 // 但保留 `latencyBadge` prop 以便测试直接注入文案、也便于将来别处复用。
 import { useEffect, useState, type ReactNode } from 'react';
-import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import TabBar from './TabBar.js';
 import { FillToasts } from './Toast.js';
 import { useSession } from '../session.js';
 import { useRealtime } from '../lib/realtime.js';
+import { NAV_ITEMS } from '../lib/nav.js';
 
 /** 路由 → 标题。未列出的路由不显示标题栏标题（如个股页自带标题）。 */
 const TITLES: Record<string, string> = {
@@ -44,7 +51,25 @@ export default function AppShell({ latencyBadge, children }: AppShellProps): Rea
               data-testid="latency-badge">{badge}</span>
           : null}
       </header>
-      <main className="appshell__main">{children ?? <Outlet />}</main>
+      <div className="appshell__body">
+        {/* 桌面侧栏：窄屏由 CSS 隐藏（display:none），不占位也不影响移动端 DOM 语义。
+            不再重复渲染站名 —— 顶部 header 已有标题，侧栏只做导航。 */}
+        <nav className="appshell__sidebar" aria-label="主导航">
+          {NAV_ITEMS.map(t => (
+            <NavLink
+              key={t.to}
+              to={t.to}
+              end={t.end}
+              className={({ isActive }) =>
+                (isActive ? 'appshell__navlink active' : 'appshell__navlink')}
+            >
+              <span className="appshell__navicon" aria-hidden="true">{t.icon}</span>
+              <span>{t.label}</span>
+            </NavLink>
+          ))}
+        </nav>
+        <main className="appshell__main">{children ?? <Outlet />}</main>
+      </div>
       {/* 成交通知跨页常驻：限价单是异步成交的，用户可能已离开个股页（规格 §4.4）。 */}
       <FillToasts />
       <TabBar />

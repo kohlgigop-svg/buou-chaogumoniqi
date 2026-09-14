@@ -318,23 +318,135 @@ NODE_ENV=production
 Zeabur 的公开 API 是 **GraphQL**（`https://api.zeabur.com/graphql`），
 认证头 `Authorization: Bearer <API Key>`。以下为实测确认的调用要点：
 
-- 可用区域：`hkg1`(香港) / `tpe0`·`tpe1`(台北) / `sha1`(上海) / `hnd1`(东京) /
-  `sfo1`·`sjc1`(美西) / `fra1`(法兰克福) / `cgk1`(雅加达)。**择优取 `hkg1`**（离用户最近）。
-- `projects` 返回的是 **`ProjectConnection`**（要写 `edges { node { … } }`，不能直接查字段）——
-  一开始按普通 list 写会得到 `Cannot query field "_id" on type "ProjectConnection"`。
-- 建服务走 **`createServiceFromArbitraryGit(projectID, name, gitURL, branch)`**：
-  只需 Git URL，**不需要** `repoID`（那是 `createService` 配合 GitHub OAuth 用的路径），
-  且 Dockerfile 会被自动识别，无需 `<template>`。
-- 环境变量逐个用 `createEnvironmentVariable(serviceID, environmentID, key, value)` 注入
-  （无批量版；`updateEnvironmentVariable` 收的是 `data` 映射，也可一次性改）。
-- 持久卷：`mountVolume(serviceID, id, dir)`，`dir` 填 **`/data`**。
-- 触发构建：`deploy(serviceID, environmentID)`；`ServiceStatus` 枚举为
-  `STARTING` / `BUILDING` / `RUNNING` / `CRASHED` / `PULL_FAILED` / `SUSPENDED` / `STOPPING` / `PENDING` / `UNKNOWN`。
-- ⚠️ `Project` **没有** `region` 之外的区域选择入口，区域只在 `createProject(name, region)` 时定，
-  **建成后不可迁**——所以区域必须一次选对。
+> ⚠️ **本节已按 2026-09-14 真实上线作业全面修订。** 初版有 5 条判断是错的
+> （共享集群、Dockerfile 自动识别、`MASTER_SEED` 格式、`deploy` 可用性、构建期 `NODE_ENV`），
+> 全部在实操中翻车并已更正。**以本节为准。**
 
-编排脚本：`E:\布偶\_zb_deploy.mjs`（本机工具目录，未入库），做「建项目 → 挂 Git → 注入变量
-→ 挂卷 → 触发部署」四步，并生成 64 位十六进制随机 `MASTER_SEED`。
+#### 5.5.1 区域：共享集群已弃用，必须租独立服务器
+
+**这一条推翻了初版的关键前提。** `createProject` 传 `hkg1` 之类的集群代码会直接报错：
+
+```
+Shared clusters are deprecated. Please rent a Server and use server-XXXXXXXX as the region code.
+```
+
+现在的正确次序是**先租服务器，再建项目**，`createProject` 的 `region` 要传 **`server-<serverID>`**：
+
+| 步骤 | mutation / query | 说明 |
+|---|---|---|
+| 1 | `dedicatedServerProviders` | 列出可用云厂商 |
+| 2 | `dedicatedServerRegions(provider:)` | 列该厂商可选区域 |
+| 3 | `dedicatedServerPlans(provider:, region:)` | 列规格与价格 |
+| 4 | `rentServer(ownerID!, provider!, region!, plan!, installZeaburOS)` | **三个 `String!` 都要带 `!`** |
+| 5 | `server(_id:)` | 查 `provisioningStatus` |
+
+- `provisioningStatus` 枚举：`CREATING → PROVISIONING → INITIALIZING → VERIFYING → READY → FAILED`。
+- ⚠️ `server.status` 是**对象**不是标量，必须写子字段
+  （`status { isOnline vmStatus sshAvailable totalCPU usedMemory … }`），否则报
+  `Field "status" of type "ServerStatus!" must have a selection of subfields`。
+- ⚠️ **租完几分钟内 `totalCPU`/`totalMemory` 显示 0**，这是 agent 尚未上报，**不是异常**，
+  等几分钟会变成真实值（本次最终 2000m / 1967MB / 40G 磁盘）。
+- 本轮实选：腾讯云香港 `ap-hongkong`，2 核 2G，**$6/月**。
+- ⚠️ 区域建成后**不可迁移**，必须一次选对。
+
+#### 5.5.2 建服务：`template` 恒为 `PREBUILT_V2`，且**必须显式指定 Dockerfile**
+
+初版写「Dockerfile 会被自动识别，无需 `<template>`」，**实测不成立**。
+
+- `projects` 返回的是 **`ProjectConnection`**（要写 `edges { node { … } }`）——
+  按普通 list 写会得到 `Cannot query field "_id" on type "ProjectConnection"`。
+- 建服务走 `createServiceFromArbitraryGit(projectID, name, gitURL, branch)`，
+  只需 Git URL，**不需要** `repoID`（那是 `createService` 配 GitHub OAuth 的路径）。
+- ⚠️⚠️ 但 `createServiceFromArbitraryGit` 建出的服务 **`template` 永远是 `PREBUILT_V2`**
+  （构建器 `zbpack-v2`），而它**不会自动识别仓库里的 Dockerfile**。
+  不额外配置时，`deploy` 报 `failed to schedule build`（`INTERNAL`，看不出根因），
+  `redeployService` 才会给出真因：
+  ```
+  "Dockerfile is required for arbitrary Git sources. Auto-detection is not supported yet."
+  ```
+- ✅ **正解**：给服务加环境变量 **`ZBPACK_DOCKERFILE_PATH=Dockerfile`**
+  （值相对 build root；官方文档另有 `ZBPACK_DOCKERFILE_NAME`，只接后缀，易误用）。
+  加上之后 `#1 [internal] load build definition from Dockerfile` 正常出现，走真 Docker 构建。
+- ⚠️ `updateDockerfile(serviceID, dockerfile)` 的 `dockerfile` 参数是 **Dockerfile 内容**，
+  **不是路径**。填 `./Dockerfile` 会导致构建日志报
+  `dockerfile parse error on line 1: unknown instruction: ./Dockerfile`。
+  而且这个字段会**被清空**（改环境变量后 `configInfo(path:"Dockerfile")` 返回
+  `No such config item`），**不可依赖**，仍应以仓库内 Dockerfile 为准。
+
+#### 5.5.3 ⚠️ 构建期绝不能设 `NODE_ENV=production`
+
+**这是最隐蔽的一个坑。** 给服务注入 `NODE_ENV=production` 后，构建期 `npm ci` 会**跳过
+devDependencies**：
+
+| | 安装包数 | 结果 |
+|---|---|---|
+| 有 `NODE_ENV=production` | **128** | `sh: 1: tsc: not found` → `exit code 127`，构建失败 |
+| 无（仅 Dockerfile runner 阶段设） | **290** | tsc / vite 齐全，构建成功 |
+
+本 Dockerfile 的 builder 阶段**需要** devDeps（tsc、vite 都是 devDependency），
+`ENV NODE_ENV=production` 只应出现在 **runner 阶段**（Dockerfile 第 69 行）。
+→ **服务环境变量里不要放 `NODE_ENV`。**
+
+#### 5.5.4 ⚠️ `MASTER_SEED` 必须是整数，且**一旦落库就不可再改**
+
+- `envInt()`（`server/src/index.ts:56`）用 `Number(raw)` 校验，
+  传十六进制字符串会**启动即崩**：
+  ```
+  [fatal] Error: MASTER_SEED must be a number, got "2016c9c2…"
+  ```
+  正确形态是整数，如 `1774461179`。
+- ⚠️ 更关键：`ensureGenesis()` 用 `INSERT OR IGNORE` 写 `config` 表，
+  且 `readGenesis()` **若已有值就提前返回** —— 所以
+  **首次启动写入后，环境变量 `MASTER_SEED`/`GENESIS_TS` 就永久失效了**，
+  库里的值才是唯一真相。想改只能重建数据库。
+- 推论：**首次部署时就要把种子设对**；本轮首建时未注入变量，
+  库里落的是随机种子与「当前整点」创世时刻，后续注入被忽略。
+
+#### 5.5.5 端口与域名
+
+- ⚠️ `addDomain` 之前**必须先声明端口**，否则报 `The service has no ports.`（`SERVICE_NO_PORT`）。
+  用 `updateServicePorts(serviceID, environmentID, ports: [{ id, port, type }])`，
+  `type` 取 `HTTP` / `TCP` / `UDP`；本服务填 `id:"web", port:8080, type:HTTP`。
+  ⚠️ 该 mutation 返回 **`Boolean`**，**不能加子选择**。
+- `addDomain(serviceID, environmentID, domain, isGenerated:true)` 生成
+  `<name>.zeabur.app`。域名加好后**要再 redeploy 一次**入口才生效（否则 502）。
+
+#### 5.5.6 其余接口要点
+
+- 环境变量逐个用 `createEnvironmentVariable(serviceID, environmentID, key, value)` 注入
+  （无批量版；返回 `EnvironmentVariable!`，**必须选子字段**如 `{ key }`）。
+  查询已注入项用 `service { variables(environmentID:) { key } }`
+  （⚠️ 参数 `environmentID` 是**必填**；字段名是 `variables`，不是 `environmentVariables`）。
+- 删除单个变量：`deleteSingleEnvironmentVariable(serviceID, environmentID, key)`
+  返回 `[EnvironmentVariable!]!`，**必须选子字段**。
+- 持久卷：`mountVolume(serviceID, id, dir)`，`dir` 填 **`/data`**。
+  查询用 `volumes(environmentID:) { id dir }`（字段是 `id`/`dir`，**没有** `_id`/`name`/`mountPath`）。
+- 触发构建：⚠️ **`deploy` 在本场景不可用**（报 `failed to schedule build`），
+  改用 **`redeployService(serviceID, environmentID)`**（返回 `Boolean`）。
+- 查看构建日志：`buildLogs(projectID, deploymentID) { message timestamp }`（**倒序**返回，需自行 reverse）。
+- 查看运行日志：`runtimeLogs(serviceID, environmentID, projectID) { message }`。
+  ⚠️ 它**会返回历史 Pod 的旧日志**，排查时要按 `hostname` 区分当前 Pod，别被过期错误误导。
+  `searchRuntimeLogs` 需 Pro/Team 套餐，免费版返回 `PERMISSION_DENIED`。
+- `ServiceStatus` 枚举：`STARTING` / `BUILDING` / `RUNNING` / `CRASHED` / `PULL_FAILED` /
+  `SUSPENDED` / `STOPPING` / `PENDING` / `UNKNOWN`；
+  更细的容器态看 `podStatuses(environmentID:) { name status }`（`READY` = 健康）。
+
+#### 5.5.7 本轮实际构建结果（可重放性验证）
+
+Zeabur 上 `npm ci` 仅 **5–9 秒**（本机需 9 分钟，网络差异），全流程 **85 秒**。
+构建产物哈希与本机预演**逐字节一致**：
+
+```
+dist/assets/index-DOLpFVeW.css   35.49 kB │ gzip:   6.28 kB
+dist/assets/index-BazLe92Q.js   532.93 kB │ gzip: 170.01 kB
+```
+
+镜像大小 91,692,852 字节。
+
+编排脚本：`E:\布偶\_zb_*.mjs`（本机工具目录，未入库）。
+⚠️ `_zb_deploy.mjs` 里的 `makeSeed()` 生成的是 64 位 hex，**与 5.5.4 冲突，属过时逻辑**，
+以 5.5.4 的整数要求为准。当前实际使用的是手工分步 + `_zb_gql.mjs` / `_zb_setvars.mjs` /
+`_zb_setdf.mjs` / `_zb_watch.mjs` / `_zb_check.mjs`。
 
 ---
 
@@ -534,3 +646,39 @@ Chrome CDP（`--headless=new`，430×932 移动视口）连真实构建产物：
       **以逐指令等价复刻取代**（§3.1），端点行为全部符合预期；真机构建待用户在 Docker 环境执行
 - [x] **Step 3**: Zeabur 部署（**降级**为部署清单待用户执行）—— runbook 与环境变量模板见 §5
 - [x] **Step 4: Commit** —— `docs: plan c local acceptance and deployment runbook`
+
+---
+
+## 9. 线上部署实况（2026-09-14 完成，**已上线运行**）
+
+**线上地址：<https://buou-chaogumoniqi.zeabur.app>**
+
+Step 2 / Step 3 原先都标着「降级 / 待用户执行」，本轮已**全部转为真实执行**：
+
+| 项 | 结果 |
+|---|---|
+| GitHub 推送 | `plan-b @ f06a8bc` → `kohlgigop-svg/buou-chaogumoniqi`（14 笔提交，`main` 未动） |
+| Zeabur 服务器 | 腾讯云香港 2 核 2G（$6/月），`READY`，IP `43.128.55.171` |
+| 真机构建 | **成功**，zbpack-v2 + 本仓库 Dockerfile，全流程 **85 秒** |
+| 产物一致性 | `index-BazLe92Q.js`(532.93 kB) / `index-DOLpFVeW.css`(35.49 kB) —— 与本机预演**逐字节一致** |
+| 持久卷 | `pt-data → /data`，**重启后数据保留已验证** |
+| 部署后自检 | **14 / 14 全绿**（`_zb_check.mjs`，重启前后各跑一遍均全绿） |
+| 管理员账号 | `admin` 可登录且 `isAdmin: true`（密码另存，未入库） |
+
+**重启持久性实证**：重建用户 `persist_test_001`(id=8) → `restartService` →
+重新登录**仍成功**，且 `lastTick` 794 → 811 **未回退**，证明
+① 用户/密码落库于持久卷；② 创世参数与行情序列完整保留。
+
+**本轮新增的 5 条平台坑**（详见 §5.5，均已从「推断」修正为「实测」）：
+
+1. ⚠️ 共享集群已弃用 → 必须先 `rentServer` 再建项目，region 传 `server-<id>`
+2. ⚠️ `createServiceFromArbitraryGit` 恒为 `PREBUILT_V2`，**不认仓库 Dockerfile**，
+   必须加 `ZBPACK_DOCKERFILE_PATH=Dockerfile`
+3. ⚠️⚠️ **服务环境变量绝不能设 `NODE_ENV=production`** —— 会让构建期 `npm ci`
+   跳过 devDeps（128 包 vs 290 包），`tsc: not found` 构建失败
+4. ⚠️ `MASTER_SEED` 必须是**整数**（hex 字符串会启动即崩）；
+   且一旦落库，环境变量永久失效
+5. ⚠️ 必须先 `updateServicePorts` 声明端口才能 `addDomain`
+
+**遗留**：`main` 分支仍为空，`plan-b` 为实际部署分支。若要正式化，
+需将 `plan-b` 合并到 `main`（**本轮未做，遵守「不合并 master」纪律**）。

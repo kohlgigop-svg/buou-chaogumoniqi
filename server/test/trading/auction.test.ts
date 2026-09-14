@@ -231,7 +231,7 @@ describe('规格 §4.4：集合竞价统一价受当轮挂单净需求失衡调�
   it('调整幅度受 auctionImpactCap 限制（不越出涨跌停）', () => {
     const uid = user(db, 'capped', 500_000_000_000); stock(db, uid, 100);
     pinPrice(1000);
-    // 净买远超单 tick 均量：调整必须被 cap 夹住（3% → ≤1030），且不越过涨停 1100
+    // 净买远超单 tick 均量：调整必须被 cap 夹住（≤ cap），且不越过涨停 1100
     order(db, uid, 20, 'B', 1090, 200_000_000, 'big');
     const events: FillEvent[] = []; m.onFill(f => events.push(f));
     db.transaction(() => m.onAuctionClear(ctx(db, 59), 'open'))();
@@ -239,6 +239,18 @@ describe('规格 §4.4：集合竞价统一价受当轮挂单净需求失衡调�
     const p = events[0]!.price;
     expect(p).toBeLessThanOrEqual(Math.round(1000 * (1 + DEFAULTS.trading.auctionImpactCap)) + 1);
     expect(p).toBeGreaterThan(1000);
+  });
+
+  it('⚠️ 玩家稀疏性：规模与单 tick 均量同量级的挂单也必须实际推动统一价', () => {
+    // K=0.8 时 raw 落在 1e-4 量级，round 后调整量恒为 0 —— 竞价定价形同虚设。
+    // 用「本金级」规模（BIG 与单 tick 均量同量级）验证调整确实非零。
+    const uid = user(db, 'sparse', 50_000_000_000); stock(db, uid, 100);
+    pinPrice(1000);
+    order(db, uid, 20, 'B', 1090, BIG, 'sparse-b');
+    const events: FillEvent[] = []; m.onFill(f => events.push(f));
+    db.transaction(() => m.onAuctionClear(ctx(db, 59), 'open'))();
+    expect(events).toHaveLength(1);
+    expect(events[0]!.price).toBeGreaterThan(1000); // 具体位移量已非 0
   });
 
   it('调整后的价格对所有合资格委托一致（统一价语义）', () => {
@@ -294,8 +306,16 @@ describe('真实引擎集合竞价、结算和重启', () => {
         expect(row(run.db, buy).filled).toBe(0);
         run.eng.catchUpTo(G + 59 * TICK_MS);
         expect(row(run.db, buy)).toMatchObject({ status: 'done', filled: 100 });
-        expect(run.db.prepare('SELECT price,tick FROM trades WHERE order_id=?').get(buy))
-          .toEqual({ price: run.eng.getQuote(CODE)!.price, tick: 59 });
+        // ⚠️ 成交价 = **竞价清算价**（参考价叠加净需求调整后夹在涨跌停内），
+        // 不一定等于该 tick 的模型参考价：本单规模远超单 tick 均量时调整量会实际生效。
+        // 这里断言「成交价 = 参考价 ± 净需求调整」，即必须落在涨跌停内、且不小于参考价
+        // （本用例是单边大额买单，净需求为正）。跨重启两条链的一致性由末尾 dump 全等保证。
+        const ref: number = run.eng.getQuote(CODE)!.price;
+        const trade = run.db.prepare('SELECT price,tick FROM trades WHERE order_id=?').get(buy) as
+          { price: number; tick: number };
+        expect(trade.tick).toBe(59);
+        expect(trade.price).toBeGreaterThanOrEqual(ref);
+        expect(trade.price).toBeLessThanOrEqual(Math.round(ref * (1 + DEFAULTS.trading.auctionImpactCap)) + 1);
         expect(holding(run.db, run.uid).qty_sellable).toBe(0);
         expect(() => order(run.db, run.uid, 60, 'S', run.eng.getQuote(CODE)!.limitDown, 100, 'same-day'))
           .toThrow('not enough sellable shares');

@@ -51,7 +51,10 @@ export function priceTick(db: DB, deps: { day: number; tickInDay: number; regime
       // 价值锚 price0：IPO 股用发行价；种子股查 STOCK_SEEDS；兜底 prev_close
       const price0 = r.ipo ?? SEED_PRICE0.get(r.code) ?? r.pc;
       const pull = anchorPullPerTick(r.price, r.eps_e6, r.pe, r.equity_e6, price0, cfg);
-      const rPlayer = Math.max(-0.03, Math.min(0.03,
+      // 玩家净流入冲击：λ 需补偿「玩家数量远少于现实市场」这一稀疏性（见 defaults.ts）。
+      // 上限从配置读（playerImpactCap），原硬编码 3% 会把中等市值股的位移一起压平。
+      const cap = cfg.playerImpactCap;
+      const rPlayer = Math.max(-cap, Math.min(cap,
         cfg.playerImpactLambda * (flow.netFlow(r.code) / Math.max(1, r.adv))));
       const ret = r.beta * rMkt + 0.65 * (rSec.get(r.sector) ?? 0) + eps * sigmaTick
         + (eventMap.get(r.code) ?? 0) + pull + rPlayer;

@@ -10,7 +10,7 @@ describe('plan-b config 扩展', () => {
   });
 
   it('auth 节逐键精确', () => {
-    expect(DEFAULTS.auth.initialCash).toBe(10_000_000);
+    expect(DEFAULTS.auth.initialCash).toBe(100_000_000);
     expect(DEFAULTS.auth.sessionDays).toBe(30);
     expect(DEFAULTS.auth.ipRegPerDay).toBe(20);
     expect(DEFAULTS.auth.loginLockN).toBe(5);
@@ -82,5 +82,21 @@ describe('plan-b config 扩展', () => {
   it('计划 A 既有键不受影响', () => {
     expect(DEFAULTS.backupKeep).toBe(7);
     expect(DEFAULTS.poolTarget).toBe(48);
+  });
+
+  it('⚠️ playerImpactLambda 必须足以让「玩家全仓单只」产生可见位移', () => {
+    // 本游戏玩家数量远少于现实市场，λ 必须补偿这一稀疏性。
+    // λ=0.8 时，¥1,000,000 全仓买入大盘股（如 601389 环宇银行，adv=7.5e8）
+    // 净股数/adv ≈ 2.6e-4 → 冲击 2e-4 量级，取整到分后**恰好为 0 分**
+    // —— 玩家操作对价格完全不可见（bug 现象）。
+    // 下限 5 是「中位股一次全仓 ≥1% 量级位移」的反推值；
+    // 上限 20 是防止单个玩家轻易把每只股票顶到饱和上限（会退化成手动涨停）。
+    expect(DEFAULTS.playerImpactLambda).toBeGreaterThanOrEqual(5);
+    expect(DEFAULTS.playerImpactLambda).toBeLessThanOrEqual(20);
+  });
+
+  it('⚠️ 玩家冲击的每 tick 饱和上限必须放宽到 5%（原 3% 会压制中等市值股）', () => {
+    expect(DEFAULTS.playerImpactCap).toBeGreaterThanOrEqual(0.05);
+    expect(DEFAULTS.playerImpactCap).toBeLessThanOrEqual(0.10);
   });
 });

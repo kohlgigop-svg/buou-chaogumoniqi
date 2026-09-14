@@ -377,21 +377,22 @@ describe('API e2e：POST /api/orders + DELETE /api/orders/:id', () => {
   const orderBody = { code: '601389', side: 'B', type: 'L', price: 520, qty: 100, clientKey: 'e2e-1' };
 
   it('登录下单→幂等重放→撤单：余额闭环', async () => {
+    const CASH = DEFAULTS.auth.initialCash; // 从配置推导，避免调参后静默失配
     const r1 = await app.inject({ method: 'POST', url: '/api/orders', cookies: { sid }, payload: orderBody });
     expect(r1.statusCode).toBe(200);
     const { orderId, reused } = r1.json() as { orderId: number; reused: boolean };
     expect(reused).toBe(false);
-    expect(balancesOf(db, uid)).toEqual({ available: 10_000_000 - FREEZE_E2E, frozen: FREEZE_E2E });
+    expect(balancesOf(db, uid)).toEqual({ available: CASH - FREEZE_E2E, frozen: FREEZE_E2E });
     // 幂等重放
     const r2 = await app.inject({ method: 'POST', url: '/api/orders', cookies: { sid }, payload: orderBody });
     expect(r2.statusCode).toBe(200);
     expect(r2.json()).toEqual({ orderId, reused: true });
-    expect(balancesOf(db, uid)).toEqual({ available: 10_000_000 - FREEZE_E2E, frozen: FREEZE_E2E });
+    expect(balancesOf(db, uid)).toEqual({ available: CASH - FREEZE_E2E, frozen: FREEZE_E2E });
     // 撤单 204 无 body
     const r3 = await app.inject({ method: 'DELETE', url: `/api/orders/${orderId}`, cookies: { sid } });
     expect(r3.statusCode).toBe(204);
     expect(r3.body).toBe('');
-    expect(balancesOf(db, uid)).toEqual({ available: 10_000_000, frozen: 0 });
+    expect(balancesOf(db, uid)).toEqual({ available: CASH, frozen: 0 });
     // 再撤 → 409 NOT_CANCELLABLE
     const r4 = await app.inject({ method: 'DELETE', url: `/api/orders/${orderId}`, cookies: { sid } });
     expect(r4.statusCode).toBe(409);
@@ -410,9 +411,12 @@ describe('API e2e：POST /api/orders + DELETE /api/orders/:id', () => {
   });
 
   it('域错误经错误信封映射：INSUFFICIENT_CASH 400 / UNKNOWN_STOCK 404 / PHASE_CLOSED 400', async () => {
+    // 初始资金已提到 ¥1,000,000，故必须用「本金也能超」的规模才能触发 INSUFFICIENT_CASH：
+    // 600619 单价 ¥1,580，取比本金对应的股数再多的量（向上取整到百股）。
+    const overQty = Math.ceil(DEFAULTS.auth.initialCash / 158_000 / 100) * 100 + 100;
     const rich = await app.inject({ method: 'POST', url: '/api/orders', cookies: { sid },
-      payload: { code: '600619', side: 'B', type: 'L', price: 158_000, qty: 100, clientKey: 'e2e-cash' } });
-    expect(rich.statusCode).toBe(400);          // 初始 10万元 < 冻结 15.8万+费
+      payload: { code: '600619', side: 'B', type: 'L', price: 158_000, qty: overQty, clientKey: 'e2e-cash' } });
+    expect(rich.statusCode).toBe(400);          // 本金 < 冻结 15.8万×股数+费
     expect(rich.json().code).toBe('INSUFFICIENT_CASH');
     const unk = await app.inject({ method: 'POST', url: '/api/orders', cookies: { sid },
       payload: { ...orderBody, code: '999999', clientKey: 'e2e-unk' } });

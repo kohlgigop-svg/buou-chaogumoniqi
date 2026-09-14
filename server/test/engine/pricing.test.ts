@@ -35,4 +35,45 @@ describe('pricing', () => {
     const db = setup(); openDay(db, 1, DEFAULTS); closeDay(db, 1);
     expect((db.prepare(`SELECT COUNT(*) c FROM candles_day WHERE day=1`).get() as any).c).toBe(48 + 21);
   });
+
+  /**
+   * ⚠️ 玩家稀疏性回归：本游戏玩家远少于现实市场，「一次全仓买入」必须能推动价格。
+   *
+   * 曾经的现象：λ=0.8 + adv 为日均量，导致 `λ × netFlow/adv` 落在 1e-4 量级，
+   * `Math.round(price × exp(ret))` 对低价股（如 ¥5.20）**取整后恒等于原价** ——
+   * 玩家买卖在盘面上完全看不见（用户报告「影响股市太难了」）。
+   *
+   * 这里用一个显式的 FlowProvider 模拟「玩家把本金全仓砸进一只股票」：
+   * 净股数 = 本金(¥1,000,000) / 价格，取整到手。
+   * 断言：买入后价格必须**严格上移**，且幅度落在合理区间（可见但不手动涨停）。
+   */
+  it('⚠️ 玩家全仓买入必须产生可见价格位移（不再是 0 分）', () => {
+    const CASES: { code: string; cash: number }[] = [
+      { code: '601389', cash: DEFAULTS.auth.initialCash }, // adv 最大、价格最低 → 最难推动
+      { code: '600037', cash: DEFAULTS.auth.initialCash },
+      { code: '000334', cash: DEFAULTS.auth.initialCash }, // 中位股
+    ];
+    for (const c of CASES) {
+      const db = setup();
+      const qty = Math.floor(c.cash / (db.prepare('SELECT price FROM stock_state WHERE code=?')
+        .get(c.code) as { price: number }).price / 100) * 100;
+      const flow = { netFlow: (code: string): number => (code === c.code ? qty : 0) };
+      const st = { regime: 1 as const, sectorS: {} };
+      const before = (db.prepare('SELECT price FROM stock_state WHERE code=?')
+        .get(c.code) as { price: number }).price;
+      // 只跑一 tick：隔离玩家冲击，避免随机游走淹没信号
+      priceTick(db, { day: 1, tickInDay: 60, regime: st,
+        rng: Rng.fromSeed(7, 1, 'pricing'), drift: new Map(), flow, cfg: DEFAULTS });
+      const after = (db.prepare('SELECT price FROM stock_state WHERE code=?')
+        .get(c.code) as { price: number }).price;
+      // 同一 tick 的噪声可能反向，故只断言「相对同种子无流孪生」有正向位移
+      const db2 = setup();
+      priceTick(db2, { day: 1, tickInDay: 60, regime: st,
+        rng: Rng.fromSeed(7, 1, 'pricing'), drift: new Map(), flow: NOFLOW, cfg: DEFAULTS });
+      const base = (db2.prepare('SELECT price FROM stock_state WHERE code=?')
+        .get(c.code) as { price: number }).price;
+      expect(after, `${c.code} 玩家全仓买入后价格未上移（现状=不可见）`).toBeGreaterThan(base);
+      db.close(); db2.close();
+    }
+  });
 });

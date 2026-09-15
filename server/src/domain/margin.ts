@@ -709,6 +709,34 @@ export class MarginSettlementHook implements SettlementHook {
    */
   private reconcile(ctx: TickCtx): void {
     const { db } = this;
+
+    // ① 清理**孤儿账户**：用户行已不存在（被 `DELETE /api/admin/users/:id` 删掉）
+    //    但 margin 行还留着。
+    //
+    //    为什么必须在这里兜底（而不是只靠 admin 删除路径）：`margin_accounts` /
+    //    `margin_positions` **没有**指向 users 的外键，漏删不报错；而下面的
+    //    `checkMaintenance` 会遍历 `margin_accounts` 并对每行调 `marginState()`，
+    //    它第一件事就是读 `users.credit` —— 用户不存在即抛 `UNAUTHORIZED`，
+    //    把**整个 tick 事务**带崩。线上表现是「结算卡死、行情停摆」，
+    //    而日志里只有一句 401，极难联想到是删号留下的。
+    //    两处都清（admin 管新账、这里管旧账），且都是幂等的。
+    //
+    //    ⚠️ 只删 margin 两张表，**绝不动 ledger**（append-only，且全局平衡靠它）：
+    //    债务本就不进 ledger，所以「删号即债务消失」不会让 auditGlobal 失衡。
+    //
+    //    两张表各查一次并集：正常情况下 orphan 账户与 orphan 持仓是同一个人，
+    //    但半删状态（账户行已清、持仓行没清）也要能收敛。
+    const orphanIds = new Set<number>([
+      ...(db.prepare('SELECT user_id FROM margin_accounts WHERE user_id NOT IN (SELECT id FROM users)')
+        .all() as { user_id: number }[]).map(r => r.user_id),
+      ...(db.prepare('SELECT DISTINCT user_id FROM margin_positions WHERE user_id NOT IN (SELECT id FROM users)')
+        .all() as { user_id: number }[]).map(r => r.user_id),
+    ]);
+    for (const id of orphanIds) {
+      db.prepare('DELETE FROM margin_positions WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM margin_accounts WHERE user_id = ?').run(id);
+    }
+
     const rows = db.prepare(`SELECT p.user_id, p.code, p.kind, p.qty, p.cost, p.frozen,
         s.status, COALESCE(h.qty_total, 0) held
       FROM margin_positions p

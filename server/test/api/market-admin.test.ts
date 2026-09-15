@@ -436,6 +436,73 @@ describe('admin：DELETE /api/admin/users/:id（清理测试账号）', () => {
   });
 });
 
+// ---------- admin：删除用户必须连带清理信用交易表（2026-09-15） ----------
+
+describe('admin：DELETE 必须清理融资融券从属行', () => {
+  /** 建一个信誉分够开信用账户的账号，并真开一个信用账户。 */
+  async function marginUser(name: string, ip: string) {
+    const t = await register(name, ip);
+    db.prepare('UPDATE users SET credit = 700 WHERE id = ?').run(t.id);
+    const open = await app.inject({ method: 'POST', url: '/api/margin/open', cookies: { sid: t.sid } });
+    expect(open.statusCode).toBe(200);
+    return t;
+  }
+
+  it('⚠️ 删除后 margin_accounts / margin_positions 不留孤儿行', async () => {
+    const t = await marginUser('zzmgn1', '6.6.6.1');
+    expect(db.prepare('SELECT COUNT(*) c FROM margin_accounts WHERE user_id = ?').get(t.id))
+      .toEqual({ c: 1 });
+
+    const del = await app.inject({ method: 'DELETE', url: `/api/admin/users/${t.id}`,
+      cookies: { sid: adminSid } });
+    expect(del.statusCode).toBe(200);
+
+    // ⚠️ 这两张表**没有**指向 users 的外键，所以漏删**不会报错** —— 但日终结算会遍历
+    //    margin_accounts 并对每行读 users.credit，用户不存在即抛 UNAUTHORIZED，
+    //    把整个 tick 事务带崩（线上表现 = 结算卡死、行情停摆）。见 domain/margin.test.ts
+    //    的「孤儿账户不能把结算带崩」。
+    expect(db.prepare('SELECT COUNT(*) c FROM margin_accounts WHERE user_id = ?').get(t.id))
+      .toEqual({ c: 0 });
+    expect(db.prepare('SELECT COUNT(*) c FROM margin_positions WHERE user_id = ?').get(t.id))
+      .toEqual({ c: 0 });
+  });
+
+  it('⚠️ 只有信用持仓（无普通持仓）的用户默认拒删，force 后不留孤儿', async () => {
+    const t = await marginUser('zzmgn2', '6.6.6.2');
+    // 用**融券卖出**而不是融资买入来造状态：空头不产生 holdings，
+    // 于是「拒删」只能来自信用账户本身，能证明新加的 blocker 真的在起作用
+    // （融资买入会被既有的 heldStocks 拦下，测不出新逻辑）。
+    const sh = await app.inject({ method: 'POST', url: '/api/margin/short', cookies: { sid: t.sid },
+      payload: { code: '600619', qty: 10 } });
+    expect(sh.statusCode).toBe(200);
+    expect(db.prepare('SELECT COUNT(*) c FROM margin_positions WHERE user_id = ?').get(t.id))
+      .toEqual({ c: 1 });
+    expect(db.prepare('SELECT COUNT(*) c FROM holdings WHERE user_id = ? AND qty_total > 0').get(t.id))
+      .toEqual({ c: 0 });
+
+    const blocked = await app.inject({ method: 'DELETE', url: `/api/admin/users/${t.id}`,
+      cookies: { sid: adminSid } });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json().code).toBe('USER_HAS_STATE');
+    expect(blocked.json().message).toContain('openMargin');
+
+    const forced = await app.inject({ method: 'DELETE', url: `/api/admin/users/${t.id}?force=true`,
+      cookies: { sid: adminSid } });
+    expect(forced.statusCode).toBe(200);
+    expect(db.prepare('SELECT COUNT(*) c FROM margin_accounts WHERE user_id = ?').get(t.id))
+      .toEqual({ c: 0 });
+    expect(db.prepare('SELECT COUNT(*) c FROM margin_positions WHERE user_id = ?').get(t.id))
+      .toEqual({ c: 0 });
+  });
+
+  it('只开了信用账户、没有任何信用持仓 → 不算托管状态，可直接删', async () => {
+    const t = await marginUser('zzmgn3', '6.6.6.3');
+    const del = await app.inject({ method: 'DELETE', url: `/api/admin/users/${t.id}`,
+      cookies: { sid: adminSid } });
+    expect(del.statusCode).toBe(200);
+  });
+});
+
 // ---------- admin：测试账号（不占真实注册名额） ----------
 
 describe('admin：测试账号不占 IP 注册名额', () => {

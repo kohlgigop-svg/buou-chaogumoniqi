@@ -136,9 +136,16 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminDeps)
     const openP2p = (db.prepare(
       `SELECT COUNT(*) c FROM p2p_loans WHERE (borrower_id = ? OR lender_id = ?)
         AND status IN ('pending','active','grace','overdue')`).get(id, id) as { c: number }).c;
+    // ⚠️ 信用交易（融资融券）：持仓**和**负债都要算托管状态。
+    //    只算持仓会漏掉「已卖光担保股票但还欠券商钱」这种形状。
+    const openMargin = (db.prepare(
+      `SELECT (SELECT COUNT(*) FROM margin_positions WHERE user_id = ?)
+            + (SELECT COUNT(*) FROM margin_accounts
+                 WHERE user_id = ? AND (debt > 0 OR interest > 0)) c`)
+      .get(id, id) as { c: number }).c;
 
-    const blockers = { openOrders, heldStocks, openLoans, openP2p };
-    const hasState = openOrders + heldStocks + openLoans + openP2p > 0;
+    const blockers = { openOrders, heldStocks, openLoans, openP2p, openMargin };
+    const hasState = openOrders + heldStocks + openLoans + openP2p + openMargin > 0;
     if (hasState && !force) {
       throw new AppError('USER_HAS_STATE', 409,
         `user still holds managed state: ${JSON.stringify(blockers)}`);
@@ -163,6 +170,13 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminDeps)
       db.prepare('DELETE FROM credit_events WHERE user_id = ?').run(id);
       db.prepare('DELETE FROM loans WHERE user_id = ?').run(id);
       db.prepare('DELETE FROM p2p_loans WHERE borrower_id = ? OR lender_id = ?').run(id, id);
+      // ⚠️ 融资融券这两张表**没有**指向 users 的外键，所以漏删**不会报错** ——
+      //    但会留下孤儿行，而日终结算会遍历 `margin_accounts` 并对每行读
+      //    `users.credit`，用户不存在即抛 UNAUTHORIZED，把**整个 tick 事务**带崩
+      //    （线上表现 = 结算卡死、行情停摆，日志里只有一句 401）。
+      //    `MarginSettlementHook.reconcile` 里还有一层兜底清理，两处都要有。
+      db.prepare('DELETE FROM margin_positions WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM margin_accounts WHERE user_id = ?').run(id);
       db.prepare('DELETE FROM users WHERE id = ?').run(id);
       log(req.user.id, 'DELETE_USER', { userId: id, username: target.username, force, blockers });
     })();

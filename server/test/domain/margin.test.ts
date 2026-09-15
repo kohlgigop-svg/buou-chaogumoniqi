@@ -443,3 +443,60 @@ describe('退市对账（reconcile）', () => {
     expectLedgerBalanced(id);
   });
 });
+
+// ---------- 孤儿账户（用户被删除但 margin 行留下） ----------
+
+describe('⚠️ 孤儿账户不能把结算带崩（2026-09-15）', () => {
+  /**
+   * 复现线上真实形状：`DELETE /api/admin/users/:id` 漏删 `margin_accounts` /
+   * `margin_positions`（这两张表**没有**指向 users 的外键，所以漏删不会报错）。
+   *
+   * 修复前，下一个交易日的 `onSettlement` → `checkMaintenance` 会遍历
+   * `margin_accounts` 并对每行调 `marginState()`，而它第一件事是读 `users.credit`
+   * —— 用户不存在即抛 `UNAUTHORIZED`，把**整个 tick 事务**带崩。
+   * 线上表现是「结算卡死、行情停摆」，且日志里只有一句 401，极难联想到是删号留下的。
+   */
+  function makeOrphan(): number {
+    const id = newMarginUser(100_000_000);
+    // 夹具把 CODE 的价设成 1000 分（¥10），故 1,000 股 = 1,000,000 分，过 minOrderCents。
+    financeBuy(db, cfg, id, CODE, 1_000);
+    expect(db.prepare('SELECT COUNT(*) c FROM margin_accounts WHERE user_id = ?').get(id))
+      .toEqual({ c: 1 });
+
+    // 模拟「用户行被删、margin 行没清」：清掉所有指向 users 的外键从属行，
+    // 但**故意保留** margin 两张表。ledger 行必须留着（append-only，且全局平衡靠它）。
+    db.prepare('DELETE FROM trades WHERE user_id = ?').run(id);
+    db.prepare('DELETE FROM orders WHERE user_id = ?').run(id);
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+    db.prepare('DELETE FROM holdings WHERE user_id = ?').run(id);
+    db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    return id;
+  }
+
+  it('用户行已不存在时，日终结算不抛错，且孤儿行被 reconcile 收掉', () => {
+    const id = makeOrphan();
+
+    expect(() => advanceDays(1)).not.toThrow();
+
+    expect(db.prepare('SELECT COUNT(*) c FROM margin_accounts WHERE user_id = ?').get(id))
+      .toEqual({ c: 0 });
+    expect(db.prepare('SELECT COUNT(*) c FROM margin_positions WHERE user_id = ?').get(id))
+      .toEqual({ c: 0 });
+    // 清理孤儿行只删 margin 表，绝不动 ledger —— 全局平衡必须仍然成立。
+    expect(() => auditGlobal(db)).not.toThrow();
+  });
+
+  it('孤儿账户带未平空头（冻结资金）时同样清得掉，且不影响其他人的结算', () => {
+    const orphan = makeOrphan();
+    const alive = newMarginUser(1_001_520);
+    shortSell(db, cfg, alive, CODE2, 2_000);
+
+    expect(() => advanceDays(1)).not.toThrow();
+
+    expect(db.prepare('SELECT COUNT(*) c FROM margin_accounts WHERE user_id = ?').get(orphan))
+      .toEqual({ c: 0 });
+    // 活着的那位不受影响：空头还在、冻结还在。
+    expect(posRow(alive, CODE2, 'short')?.qty).toBe(2_000);
+    expectLedgerBalanced(alive);
+  });
+});

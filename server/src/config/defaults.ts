@@ -77,6 +77,29 @@ export interface Config {
     repayEarly: number;
     /** 被打回/拒绝是否扣信誉：不扣（协商失败属正常行为，不应惩罚）。 */
   };
+  /**
+   * 融资融券（信用交易）。与 `loans`（无抵押信用贷）是**两套东西**：
+   * 这里是有担保的杠杆交易，受「维持担保比例」实时约束，跌破平仓线会强平。
+   * 全部键都在 `margin.` 前缀白名单里，可热改。
+   */
+  margin: {
+    /** 开通信用账户的信誉分门槛。 */
+    minCredit: number;
+    /** 保证金比例 e6（500_000 = 50%）。融资买入金额 ≤ 自有保证金 / 本值 ⇒ 最高 2 倍杠杆。 */
+    initRatioE6: number;
+    /** 融资日息 e6（200 = 0.02%/日 ≈ 年化 7.3%）。 */
+    financeRateE6: number;
+    /** 融券日费率 e6（按融券市值计提，250 = 0.025%/日）。 */
+    shortRateE6: number;
+    /** 维持担保比例警戒线 e6（1_500_000 = 150%）：低于此不能再开新仓。 */
+    warnRatioE6: number;
+    /** 维持担保比例平仓线 e6（1_300_000 = 130%）：低于此进入追保，T+1 未补足即强平。 */
+    liqRatioE6: number;
+    /** 融资负债上限 = 信誉分 × 本值（分）。防「比值够但绝对额离谱」。 */
+    maxDebtPerCreditPoint: number;
+    /** 单笔融资买入/融券卖出的最小金额（分），防手滑输入 1 股。 */
+    minOrderCents: number;
+  };
   work: { wageBonusPerPoint: number; shiftsPerDay: number; shiftGameHours: number;
     coursePriceBase: number; coursePriceMult: number; courseHoursPerLevel: number;
     maxLevel: number; coursePrices: number[] };  // coursePrices：显式 10 级字面量表（分）
@@ -134,6 +157,19 @@ export const DEFAULTS: Config = {
     overduePerDay: -8,
     repayOnTime: 15,
     repayEarly: 20,
+  },
+  // 融资融券：保证金 50% ⇒ 2 倍杠杆（A 股经典档；2023-09 起监管下限是 80%，
+  // 本游戏取 50% 让杠杆真正有肉吃）。开仓后维持担保比例：纯融资 200%、纯融券 150%，
+  // 平仓线 130% ⇒ 融资标的跌约 35% / 融券标的涨约 15% 触发追保。
+  margin: {
+    minCredit: 650,
+    initRatioE6: 500_000,
+    financeRateE6: 200,
+    shortRateE6: 250,
+    warnRatioE6: 1_500_000,
+    liqRatioE6: 1_300_000,
+    maxDebtPerCreditPoint: 200_000,
+    minOrderCents: 1_000_00,
   },
   work: { wageBonusPerPoint: 0.05, shiftsPerDay: 2, shiftGameHours: 8,
     coursePriceBase: 500_000, coursePriceMult: 1.6, courseHoursPerLevel: 8, maxLevel: 10,

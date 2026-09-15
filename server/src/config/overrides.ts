@@ -11,7 +11,7 @@ import type { DB } from '../db/database.js';
 import type { Config } from './defaults.js';
 
 /** 前缀白名单（带点号，避免 `tradingX` 这类误匹配）。 */
-export const CONFIG_WHITELIST = ['trading.', 'credit.', 'loans.', 'work.', 'p2p.'];
+export const CONFIG_WHITELIST = ['trading.', 'credit.', 'loans.', 'work.', 'p2p.', 'margin.'];
 
 /**
  * 精确键白名单（全等匹配）。

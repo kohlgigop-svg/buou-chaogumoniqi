@@ -201,8 +201,11 @@ export class PlayerMatcher implements OrderMatcher, FlowProvider {
       releaseOrderRemainder(this.db, o, ctx.day, ctx.tickInDay);
       this.db.prepare(`UPDATE orders SET status='expired' WHERE id=?`).run(o.id);
     }
-    this.db.prepare(`UPDATE holdings SET qty_sellable=qty_total
-      WHERE qty_total > 0 AND qty_sellable != qty_total`).run();
+    // ⚠️ 日终 T+1 解冻必须**扣掉融资买入的担保物**（`qty_margin`）。
+    // 写成 `qty_sellable = qty_total` 会让券商抵押品在次日变成可卖 —— 等于允许玩家
+    // 卖掉融资买入的股票、带着现金跑路，而债务还挂在账上。
+    this.db.prepare(`UPDATE holdings SET qty_sellable = MAX(0, qty_total - qty_margin)
+      WHERE qty_total > 0 AND qty_sellable != MAX(0, qty_total - qty_margin)`).run();
     // 收盘成交的瞬时净流不应延续到次日开盘；matching RNG 保留至下一交易日重建。
     this.loadState(ctx.day);
     this.mem!.flow = {};

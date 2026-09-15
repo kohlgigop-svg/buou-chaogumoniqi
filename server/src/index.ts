@@ -24,6 +24,7 @@ import { GameClock, TICK_MS, TICKS_PER_DAY, engineDay } from './core/clock.js';
 import { PlayerMatcher } from './trading/matcher.js';
 import { ensureStockSeeds } from './seed/topup.js';
 import { LoanSettlementHook } from './domain/loans.js';
+import { MarginSettlementHook } from './domain/margin.js';
 import { P2pSettlementHook } from './domain/p2p.js';
 import { WorkSettlementHook } from './domain/work.js';
 import { buildApp } from './api/app.js';
@@ -169,13 +170,16 @@ async function main(): Promise<void> {
   const loanHook = new LoanSettlementHook({ db, cfg });
   const workHook = new WorkSettlementHook({ db, cfg, clock: new GameClock(genesisMs) });
   const p2pHook = new P2pSettlementHook({ db, cfg });
+  const marginHook = new MarginSettlementHook({ db, cfg });
   const engine = new Engine({ db, cfg, masterSeed, genesisMs, dataDir,
     matcher, flow: matcher,
     // 事务回滚后引擎内存态会从行内快照重建；撮合器内存态同样必须回到落库状态，否则会发散。
     onTickError: (): void => matcher.resetMemory(),
     // 顺序有意义：loanHook 先跑，破产结算会把该用户的 NPC 债务豁免并置 credit=basis；
     // p2pHook 后跑，据此把该用户的 P2P 借据一并置 forgiven（出借方承担损失）。
-    settlementHooks: [loanHook, workHook, p2pHook],
+    // marginHook 放最后：它要读「本日收盘价」算维持担保比例，而前面的钩子会改现金与持仓
+    // （贷款强平会卖光持仓），排在后面才不会基于过时的资产快照判断追保。
+    settlementHooks: [loanHook, workHook, p2pHook, marginHook],
   });
 
   const clock = new GameClock(genesisMs);

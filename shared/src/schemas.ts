@@ -25,6 +25,25 @@ export const PlaceOrderSchema = z.object({
 export const BorrowSchema = z.object({ amount: z.number().int().positive(), termDays: z.number().int() });
 export const RepaySchema = z.object({ amount: z.number().int().positive() });
 
+// —— margin（融资融券）——
+// 信用交易的四种下单动作都只认「股票代码 + 数量」：成交价由服务端按当前模型价即时撮合
+// （担保品必须立刻可估值，挂单会引入「未成交但已计息」的歧义），故客户端不能指定价格。
+// qty 是**股数**（与普通下单同口径）；金额单位一律为**分**。
+const MarginCodeQtySchema = z.object({
+  code: z.string().regex(/^\d{6}$/),
+  qty: z.number().int().positive(),
+});
+/** 融资买入（借钱买股）。 */
+export const MarginFinanceSchema = MarginCodeQtySchema;
+/** 融券卖出（借券卖出，做空）。 */
+export const MarginShortSchema = MarginCodeQtySchema;
+/** 卖券还款（卖掉担保股票冲抵负债）。 */
+export const MarginSellRepaySchema = MarginCodeQtySchema;
+/** 买券还券（买回股票还给券商）。 */
+export const MarginBuyCoverSchema = MarginCodeQtySchema;
+/** 直接还款（现金冲抵负债，先息后本）。 */
+export const MarginRepaySchema = z.object({ amount: z.number().int().positive() });
+
 // —— P2P（玩家间借贷）——
 // amount 单位统一为**分**（与站内所有金额一致）。
 export const P2pProposeSchema = z.object({
@@ -50,6 +69,11 @@ export type ChangePasswordInput = z.infer<typeof ChangePasswordSchema>;
 export type PlaceOrderInput = z.infer<typeof PlaceOrderSchema>;
 export type BorrowInput = z.infer<typeof BorrowSchema>;
 export type RepayInput = z.infer<typeof RepaySchema>;
+export type MarginFinanceInput = z.infer<typeof MarginFinanceSchema>;
+export type MarginShortInput = z.infer<typeof MarginShortSchema>;
+export type MarginSellRepayInput = z.infer<typeof MarginSellRepaySchema>;
+export type MarginBuyCoverInput = z.infer<typeof MarginBuyCoverSchema>;
+export type MarginRepayInput = z.infer<typeof MarginRepaySchema>;
 export type P2pProposeInput = z.infer<typeof P2pProposeSchema>;
 export type P2pRepayInput = z.infer<typeof P2pRepaySchema>;
 export type ShiftInput = z.infer<typeof ShiftSchema>;

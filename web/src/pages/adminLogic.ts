@@ -11,7 +11,7 @@
  *  ⚠️ 曾漂移过一次：服务端加了 `p2p.` 与两个玩家冲击键，这里没跟上，
  *  于是**后台界面会拒绝热改这些键**（前端先拦，压根发不出请求）。
  *  `web/test/adminLogic.test.ts` 现在直接 import 服务端那份做交叉断言，防止再次漂移。 */
-export const CONFIG_WHITELIST_PREFIXES = ['trading.', 'credit.', 'loans.', 'work.', 'p2p.'] as const;
+export const CONFIG_WHITELIST_PREFIXES = ['trading.', 'credit.', 'loans.', 'work.', 'p2p.', 'margin.'] as const;
 
 /**
  * **精确键**白名单。白名单是前缀匹配，若把 `auth.ipRegPerDay` 丢进上面那个列表，

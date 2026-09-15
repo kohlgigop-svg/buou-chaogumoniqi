@@ -11,12 +11,16 @@ import Work from './Work.js';
 import Abilities from './Abilities.js';
 import Bank from './Bank.js';
 import P2p from './P2p.js';
+import Margin from './Margin.js';
 
 const TABS = [
   { to: '/life/work', label: '打工' },
   { to: '/life/abilities', label: '能力' },
   { to: '/life/bank', label: '银行' },
   { to: '/life/p2p', label: '借贷' },
+  // 融资融券与银行/借贷并列：三者都是「借钱」，但抵押/风险/门槛完全不同
+  // （银行是无抵押信用贷、借贷是玩家对玩家、融资融券是有担保的杠杆交易）。
+  { to: '/life/margin', label: '融资' },
 ] as const;
 
 export default function Life(): React.JSX.Element {
@@ -40,6 +44,7 @@ export default function Life(): React.JSX.Element {
         <Route path="abilities" element={<Abilities />} />
         <Route path="bank" element={<Bank />} />
         <Route path="p2p" element={<P2p />} />
+        <Route path="margin" element={<Margin />} />
         {/* /life 与未知子路径都落到「打工」 */}
         <Route index element={<Navigate to="work" replace />} />
         <Route path="*" element={<Navigate to="work" replace />} />

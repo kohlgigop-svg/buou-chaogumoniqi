@@ -7,9 +7,19 @@ export interface Valuation {
   cashFrozen: Cents;
   positionsValue: Cents;      // Σ qty_total×stock_state.price（stocks.status='delisted' 按 0）
   loansOutstanding: Cents;    // Σ(outstanding+accrued_interest)，status IN ('active','grace','overdue')
+  /**
+   * 融资融券负债（分）= 融资本金 + 已计利息 + 融券市值。
+   *
+   * ⚠️ 必须从净资产里扣掉，否则「融资买入」会**凭空抬高净资产**：股票进了 positionsValue，
+   * 而借来的钱在 `margin_accounts.debt` 里（不在 loans 表），于是
+   * `borrowRoom` 的杠杆上限（净资产 × 分数 / divisor）跟着虚高，玩家可以拿信用仓
+   * 当抵押去银行套更多贷款。融券那一头同理：冻结的担保金已在 cashFrozen 里，
+   * 空头负债不减掉就等于白赚。
+   */
+  marginDebt: Cents;
   p2pDebt: Cents;             // 我欠其他玩家的（P2P 借款人视角）
   p2pCredit: Cents;           // 其他玩家欠我的（P2P 出借人视角）
-  totalAssets: Cents;         // cashAvailable+cashFrozen+positionsValue+p2pCredit−loansOutstanding−p2pDebt
+  totalAssets: Cents;         // cashAvailable+cashFrozen+positionsValue+p2pCredit−loansOutstanding−p2pDebt−marginDebt
   totalInflow: Cents;         // Σ ledger.amount：bucket='A' AND kind IN ('GENESIS','RELIEF') AND amount>0
   returnPct: number;          // totalInflow>0 ? (totalAssets−totalInflow)/totalInflow : 0
 }
@@ -74,6 +84,16 @@ export function valuation(db: DB, userId: number): Valuation {
       WHERE h.user_id = ? AND h.qty_total > 0`).get(userId) as { v: number }).v;
   const loansOutstanding = (db.prepare(`SELECT COALESCE(SUM(outstanding + accrued_interest), 0) v
       FROM loans WHERE user_id = ? AND status IN ('active','grace','overdue')`).get(userId) as { v: number }).v;
+  // 融资融券负债：融资本息 + 融券市值（口径与 domain/margin.ts 的 liability 完全一致，
+  // 那边算维持担保比例用的是同一个式子 —— 两处若各写一份，迟早会出现
+  // 「净资产说没欠钱、维持担保比例说快爆仓」这种自相矛盾的界面）。
+  const marginDebt = (db.prepare(`SELECT
+      (SELECT COALESCE(SUM(debt + interest), 0) FROM margin_accounts WHERE user_id = ?)
+      + (SELECT COALESCE(SUM(p.qty * t.price), 0) FROM margin_positions p
+          JOIN stock_state t ON t.code = p.code
+          JOIN stocks s ON s.code = p.code
+          WHERE p.user_id = ? AND p.kind = 'short' AND s.status != 'delisted') v`)
+    .get(userId, userId) as { v: number }).v;
   // P2P 债权债务：借出的钱是我的资产（别人欠我），借入的钱是我的负债。
   // 只在 status IN ('active','grace','overdue') 时计入 —— pending 尚未划款，不构成任何一方的权利义务。
   const p2pDebt = (db.prepare(`SELECT COALESCE(SUM(repay_amount - repaid), 0) v FROM p2p_loans
@@ -83,9 +103,10 @@ export function valuation(db: DB, userId: number): Valuation {
   const totalInflow = (db.prepare(`SELECT COALESCE(SUM(amount), 0) v FROM ledger
       WHERE user_id = ? AND bucket = 'A' AND kind IN ('GENESIS','RELIEF') AND amount > 0`)
     .get(userId) as { v: number }).v;
-  const totalAssets = cash.a + cash.f + positionsValue + p2pCredit - loansOutstanding - p2pDebt;
+  const totalAssets = cash.a + cash.f + positionsValue + p2pCredit
+    - loansOutstanding - p2pDebt - marginDebt;
   return {
-    cashAvailable: cash.a, cashFrozen: cash.f, positionsValue, loansOutstanding,
+    cashAvailable: cash.a, cashFrozen: cash.f, positionsValue, loansOutstanding, marginDebt,
     p2pDebt, p2pCredit, totalAssets, totalInflow,
     returnPct: totalInflow > 0 ? (totalAssets - totalInflow) / totalInflow : 0,
   };

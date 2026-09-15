@@ -61,7 +61,7 @@ describe('config 白名单：只允许 trading./credit./loans./work./auth.ipRegP
     expect([...CONFIG_WHITELIST_PREFIXES]).toEqual([...SERVER_WHITELIST_PREFIXES]);
     // 顺带钉住内容，避免「两边一起改错」也算通过
     expect([...CONFIG_WHITELIST_PREFIXES]).toEqual(
-      ['trading.', 'credit.', 'loans.', 'work.', 'p2p.']);
+      ['trading.', 'credit.', 'loans.', 'work.', 'p2p.', 'margin.']);
   });
 
   it('精确键白名单与服务端一致（交叉断言，防漂移）', () => {

@@ -66,6 +66,19 @@ const MESSAGES: Record<string, string> = {
   P2P_INSUFFICIENT_CASH: '出借方可用资金不足',
   P2P_CLOSED: '该笔借款已结清',
 
+  // —— 融资融券（信用交易）——
+  // 与银行贷款刻意区分：这里是**有担保的杠杆交易**，失败原因集中在「比例/额度/仓位」，
+  // 每条都要指向下一步动作，而不是笼统「不合法」：
+  //   MARGIN_CALL → 去卖券还款 / 直接还款把维持担保比例抬回警戒线之上；
+  //   MARGIN_LIMIT → 超融资负债上限（信誉分 × 每分额度）；
+  //   MARGIN_NOT_OPEN → 先去开通信用账户；POSITION_NOT_FOUND → 你根本没有这笔仓位。
+  MARGIN_NOT_OPEN: '尚未开通信用账户',
+  MARGIN_CALL: '维持担保比例低于警戒线，暂不能开新仓',
+  MARGIN_LIMIT: '超出融资负债上限',
+  POSITION_NOT_FOUND: '没有对应的信用仓位',
+  NOTHING_OWED: '当前没有需要偿还的融资负债',
+  BAD_CODE: '标的不存在或已退市',
+
   // —— 打工与能力 ——
   JOB_NOT_FOUND: '职业不存在',
   JOB_REQUIREMENT: '能力或信誉未达标',

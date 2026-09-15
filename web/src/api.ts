@@ -100,6 +100,9 @@ export interface AuthUser {
 
 export interface Valuation {
   cashAvailable: number; cashFrozen: number; positionsValue: number; loansOutstanding: number;
+  /** 融资融券负债（融资本息 + 融券市值）。已从 totalAssets 里扣掉。 */
+  marginDebt?: number;
+  p2pDebt?: number; p2pCredit?: number;
   totalAssets: number; totalInflow: number; returnPct: number;
 }
 
@@ -382,6 +385,80 @@ export const bankApi = {
     api.post<RepayResult>(`/api/bank/loans/${id}/repay`, { amount }),
   loans: () => api.get<LoansView>('/api/bank/loans'),
   credit: () => api.get<CreditView>('/api/credit'),
+};
+
+// —— 融资融券（信用交易）——
+// 单位：金额一律**分**；比例一律 **e6**（1_500_000 = 150%）。
+// 四种下单动作都只传 { code, qty }：成交价由服务端按当前模型价即时撮合，客户端不能指定。
+export interface MarginPositionView {
+  code: string; name: string; kind: 'long' | 'short';
+  qty: number; cost: number; price: number; marketValue: number;
+  pnl: number; pnlPct: number;
+  /** 空头冻结在 F 桶的担保金（多头恒为 0）。 */
+  frozen: number; openedDay: number;
+}
+
+export interface MarginState {
+  open: boolean;
+  /** 开通门槛（信誉分）与当前信誉分是否够。 */
+  minCredit: number; eligible: boolean; credit: number;
+  debt: number; interest: number; owedTotal: number;
+  shortValue: number; liability: number;
+  cash: number; positionsValue: number;
+  /** 维持担保比例（1.0 = 100%）；无负债时为 **null**（不是 0，也不是 Infinity）。 */
+  collateral: number;
+  ratio: number | null;
+  /** 同上，乘 1e6 取整后的整数，便于直接与阈值比较。 */
+  ratioE6: number | null;
+  /** ok = 可开新仓；warn = 低于警戒线（禁开仓）；call = 低于平仓线（追保中）。 */
+  status: 'ok' | 'warn' | 'call';
+  canOpen: boolean;
+  warnSinceDay: number | null;
+  liquidatedCount: number;
+  creditCap: number; debtRoom: number;
+  /** 还能融资买入/融券卖出的**金额**上限（服务端算好的，UI 不要自己再算一遍）。 */
+  maxFinanceCents: number; maxShortCents: number;
+  positions: MarginPositionView[];
+}
+
+/** 随 state 一起下发的阈值。**UI 文案一律用它们，不要写死 150%/130%** —— 它们可热改。 */
+export interface MarginLimits {
+  initRatioE6: number; financeRateE6: number; shortRateE6: number;
+  warnRatioE6: number; liqRatioE6: number;
+  minOrderCents: number; maxDebtPerCreditPoint: number;
+}
+
+export interface MarginView { state: MarginState; limits: MarginLimits }
+
+export interface MarginTradeResult {
+  orderId: number; tradeId: number; code: string; qty: number; price: number;
+  amount: number; fees: number; loanAmount: number; marginUsed: number;
+}
+export interface MarginSellRepayResult extends MarginTradeResult {
+  interestPaid: number; principalPaid: number; owedLeft: number;
+}
+export interface MarginBuyCoverResult extends MarginTradeResult { released: number }
+export interface MarginRepayResult { interestPaid: number; principalPaid: number; owedLeft: number }
+
+export const marginApi = {
+  /** 账户全景。未开通也返回 200（`state.open === false`），前端据此渲染开通引导。 */
+  view: () => api.get<MarginView>('/api/margin'),
+  open: () => api.post<{ state: MarginState }>('/api/margin/open'),
+  /** 融资买入（借钱买股，股票作为担保物，不可卖）。 */
+  finance: (code: string, qty: number) =>
+    api.post<{ result: MarginTradeResult; state: MarginState }>('/api/margin/finance', { code, qty }),
+  /** 融券卖出（借券卖出，所得全额冻结作担保）。 */
+  short: (code: string, qty: number) =>
+    api.post<{ result: MarginTradeResult; state: MarginState }>('/api/margin/short', { code, qty }),
+  /** 卖券还款：卖掉担保股票冲抵负债（先息后本）。 */
+  sellRepay: (code: string, qty: number) =>
+    api.post<{ result: MarginSellRepayResult; state: MarginState }>('/api/margin/sell-repay', { code, qty }),
+  /** 买券还券：买回股票还给券商，资金优先来自该笔空头的冻结担保金。 */
+  buyCover: (code: string, qty: number) =>
+    api.post<{ result: MarginBuyCoverResult; state: MarginState }>('/api/margin/buy-cover', { code, qty }),
+  /** 直接还款（现金冲抵负债）。 */
+  repay: (amount: number) =>
+    api.post<{ result: MarginRepayResult; state: MarginState }>('/api/margin/repay', { amount }),
 };
 
 export const p2pApi = {

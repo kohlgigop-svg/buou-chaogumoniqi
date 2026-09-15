@@ -99,6 +99,10 @@ const EXPECTED_VALUATION = {
   cashFrozen: 200_000,
   positionsValue: 370_200,          // 300×1234 + 摘牌 0
   loansOutstanding: 5_012_000,      // 5_000_000 + 12_000
+  // 本场景没有信用账户，故融资融券负债为 0 —— 但字段必须存在：
+  // 「融资买入」会让股票进 positionsValue 而借来的钱只记在 margin_accounts.debt 里，
+  // 不减掉就等于凭空抬高净资产（银行杠杆上限跟着虚高）。
+  marginDebt: 0,
   // 本场景没有 P2P 借据，故债权/债务均为 0 —— 但字段必须存在：
   // 净资产口径已经把 P2P 并进来（借出是资产、借入是负债），漏掉会让「有钱借出去」的人净资产凭空少一块。
   p2pDebt: 0,
@@ -160,7 +164,7 @@ describe('valuation', () => {
     mkLoan(u.id, 6_000, 60, 'forgiven');
     expect(valuation(db, u.id)).toEqual({
       cashAvailable: 0, cashFrozen: 0, positionsValue: 0,
-      loansOutstanding: 6_060, p2pDebt: 0, p2pCredit: 0,
+      loansOutstanding: 6_060, marginDebt: 0, p2pDebt: 0, p2pCredit: 0,
       totalAssets: -6_060, totalInflow: 0, returnPct: 0,
     });
     expect(positions(db, u.id)).toEqual([]);

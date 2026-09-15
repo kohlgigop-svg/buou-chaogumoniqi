@@ -1359,3 +1359,58 @@ a.news__related:hover { background: var(--bg-hover); color: var(--text); }
   .p2p__grid { grid-template-columns: 1fr; }
   .p2p__stats { grid-template-columns: repeat(3, 1fr); }
 }
+
+/* —— 融资融券（信用交易）——
+   与银行/借贷共用 .bank__stats / .loan* / .badge 等既有样式；
+   这里只补「维持担保比例」这一块独有的视觉：它是个**比例**，不是金额，
+   所以单独做成一行大号数字 + 两条阈值线，而不是塞进金额格子里。 */
+.margin { display: block; }
+
+.margin__ratio {
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--bg-raised); margin-bottom: var(--sp-3);
+}
+.margin__ratio-main { display: flex; align-items: baseline; gap: var(--sp-3); }
+.margin__ratio-label { font-size: var(--fs-sm); color: var(--text-secondary); }
+.margin__ratio-value {
+  font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.margin__ratio-lines {
+  display: flex; gap: var(--sp-4); margin-top: var(--sp-1);
+  font-size: var(--fs-xs); color: var(--text-muted);
+}
+
+.margin__intro { margin: 0 0 var(--sp-3); color: var(--text-secondary); font-size: var(--fs-sm); line-height: 1.7; }
+.margin__rules { margin-top: var(--sp-3); }
+.margin__rules ul { margin: var(--sp-2) 0 0; padding-left: 1.1em; color: var(--text-secondary); font-size: var(--fs-xs); line-height: 1.9; }
+
+.margin__actions { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-3); }
+.margin__actions .order__input { flex: 1; min-width: 0; }
+
+.margin__note {
+  padding: var(--sp-2) var(--sp-4); font-size: var(--fs-xs);
+  color: var(--warning); border-bottom: 1px solid var(--border);
+}
+
+/* 两个开仓表单并排；窄屏落回单列（金额与股数两个输入框挤在一行会点不准） */
+.margin__forms { display: grid; grid-template-columns: 1fr 1fr; }
+.margin__form { padding: var(--sp-3) var(--sp-4); }
+.margin__form + .margin__form { border-left: 1px solid var(--border); }
+.margin__form-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-2); }
+.margin__form-title { font-weight: 600; }
+.margin__form-cap { font-size: var(--fs-xs); color: var(--text-secondary); }
+.margin__form-hint { margin-top: var(--sp-1); font-size: var(--fs-xs); color: var(--text-muted); line-height: 1.7; }
+.margin__form-row { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); }
+.margin__form-row .order__input { flex: 1; min-width: 0; }
+
+/* 方向色：多头（融资买入）走中性，空头（融券卖出）走危险色 —— 与 P2P 的状态条同色系 */
+.margin__form--long  { border-left: 3px solid var(--primary); }
+.margin__form--short { border-left: 3px solid var(--up); }
+
+.margin__pos-name { color: var(--text-secondary); font-size: var(--fs-sm); }
+
+@media (max-width: 767px) {
+  .margin__forms { grid-template-columns: 1fr; }
+  .margin__form + .margin__form { border-left: none; border-top: 1px solid var(--border); }
+}

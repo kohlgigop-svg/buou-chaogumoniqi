@@ -72,6 +72,19 @@ const LIFE_BODIES: Record<string, unknown> = {
       leverageCap: 0, divisor: 300, netWorth: 0, openPrincipal: 0, loansOutstanding: 0 } },
   '/api/bank/loans': { credit: 700, loans: [] },
   '/api/credit': { credit: 700, events: [] },
+  // ⚠️ `state` 与 `limits` 都是**必填**的（服务端 /api/margin 的下发形状）。
+  //    少发 `state` 会让融资页在渲染期直接抛 TypeError（深链用例会红成一片噪声），
+  //    而不是优雅降级 —— 这是刻意的：契约破了就该炸，别让页面兜底成「静默显示 0」。
+  '/api/margin': {
+    state: { open: false, minCredit: 650, eligible: true, credit: 700,
+      debt: 0, interest: 0, owedTotal: 0, shortValue: 0, liability: 0,
+      cash: 0, positionsValue: 0, collateral: 0, ratio: null, ratioE6: null,
+      status: 'ok', canOpen: false, warnSinceDay: null, liquidatedCount: 0,
+      creditCap: 0, debtRoom: 0, maxFinanceCents: 0, maxShortCents: 0, positions: [] },
+    limits: { initRatioE6: 500_000, financeRateE6: 200, shortRateE6: 250,
+      warnRatioE6: 1_500_000, liqRatioE6: 1_300_000,
+      minOrderCents: 100_000, maxDebtPerCreditPoint: 200_000 },
+  },
 };
 
 // 榜单（Task 7）与我的 Tab 的分页表也需要最小桩。
@@ -156,7 +169,7 @@ describe('登录后放行', () => {
     await screen.findByText('生活', { selector: '.tabbar__label' });
     // 三个子域的分段控件是稳定信号；/life 无子路径时 index 路由重定向到 work
     expect(await screen.findByText('职业列表')).toBeInTheDocument();
-    for (const l of ['打工', '能力', '银行']) {
+    for (const l of ['打工', '能力', '银行', '借贷', '融资']) {
       expect(screen.getByText(l, { selector: '.segtabs__item' })).toBeInTheDocument();
     }
     expect(document.querySelector('.page-placeholder')).toBeNull();
@@ -166,6 +179,15 @@ describe('登录后放行', () => {
     renderAt('/life/bank', authed(alice));
     expect(await screen.findByText('授信概览')).toBeInTheDocument();
     expect(screen.getByTestId('life-tab-bank')).toHaveClass('is-active');
+  });
+
+  it('/life/margin 可直接深链进入融资融券子页', async () => {
+    // 杠杆是独立子域（有担保的信用交易），与「银行」（无抵押信用贷）、
+    // 「借贷」（玩家对玩家）并列；深链必须能直达，否则分享出去的链接会落到打工页。
+    renderAt('/life/margin', authed(alice));
+    // 桩里 state.open=false，故落点是开通引导卡（不是「落到了打工页」）
+    expect(await screen.findByTestId('margin-open')).toBeInTheDocument();
+    expect(screen.getByTestId('life-tab-margin')).toHaveClass('is-active');
   });
 
   it('authed 访问 /leaderboard → 渲染榜单页（已实现，非占位）', async () => {

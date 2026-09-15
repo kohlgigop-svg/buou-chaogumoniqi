@@ -635,6 +635,31 @@ HMM 转移矩阵与状态参数、波动档 σ、滑点 k、玩家冲击 λ、�
   无负债时 `ratioE6 === null`、未开通融资买入回 `MARGIN_NOT_OPEN`、信誉分不足
   回 `CREDIT_LOW`、`margin.` 热改白名单用**回写同值**验证）。
 
+### 21.6 ⚠️ 删号必须连带清理信用表（否则结算卡死）
+
+`margin_accounts` / `margin_positions` **没有**指向 `users` 的外键（故意的：
+债务不是现金流向，不参与 ledger 勾稽）。代价是**漏删不会报错**，只会留下孤儿行。
+
+而日终结算的 `checkMaintenance` 会遍历 `margin_accounts`，对每行调 `marginState()`
+—— 它第一件事就是读 `users.credit`。**用户不存在即抛 `UNAUTHORIZED`，把整个 tick
+事务带崩。** 线上表现是「结算卡死、行情停摆」，日志里只有一句 401，
+极难联想到是几天前删了个号。
+
+两层防护（都要有，都是幂等的）：
+
+1. **`DELETE /api/admin/users/:id` 在删 `users` 行之前删这两张表**，
+   并把「未平信用持仓 + 未偿信用负债」计入 `blockers`（`openMargin`）——
+   只算持仓会漏掉「已卖光担保股票但还欠券商钱」这种形状。
+2. **`MarginSettlementHook.reconcile` 兜底清理孤儿行**（管旧账、管半删状态）。
+
+只删 margin 两张表，**绝不动 ledger**（append-only，全局平衡靠它）：债务本就不进
+ledger，所以「删号即债务消失」不会让 `auditGlobal` 失衡。
+
+> 复现与回归：`server/test/domain/margin.test.ts` 的「孤儿账户不能把结算带崩」
+> （直接删 `users` 行、保留 margin 行，断言结算不抛错且孤儿行被清掉）与
+> `server/test/api/market-admin.test.ts` 的「DELETE 必须清理融资融券从属行」
+> （3 例）。修复前这 4 例全红，其中两例的报错正是 `Error: not logged in`。
+
 ---
 
 ## 附录 A：股票池（110 只）

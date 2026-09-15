@@ -120,6 +120,7 @@
 | 7 | 强平豁免残债前必须确认**仓位已全平** | 否则出现「债务清了、空头还在」的无担保敞口 |
 | 8 | `marginHook` 必须排在 `settlementHooks` **最后** | 它要读本日收盘价算比例，而前面的钩子会改现金与持仓 |
 | 9 | 直接成交要补 `type='M'` 系统单（`client_key` 用 `MAX(orders.id)+1`） | `trades.order_id` 是 NOT NULL；粗粒度键会撞 `UNIQUE(user_id, client_key)` |
+| 10 | **删号必须连带清理 `margin_accounts` / `margin_positions`**，并把未平信用持仓与负债计入删除前的 `blockers` | 这两张表**没有**指向 `users` 的外键 ⇒ 漏删不报错，但日终 `checkMaintenance` 会对孤儿账户读 `users.credit` 抛 `UNAUTHORIZED`，**把整个 tick 事务带崩**（线上 = 结算卡死、行情停摆）。见 §4.3 |
 
 ### 4.1 关键参数（默认值）
 
@@ -134,6 +135,29 @@
 两者独立计额度、独立强平，但**共享同一份现金与持仓**（见陷阱 #3）。
 前端也刻意分成「银行 / 借贷 / 融资」三个子页（`/life/bank`、`/life/p2p`、
 `/life/margin`），因为三者的门槛、抵押与话术完全不同。
+
+### 4.3 部署当天才发现的那个缺陷（陷阱 #10）
+
+首轮部署成功后做线上 happy-path 核验时，先查了「删测试账号会不会留下信用表孤儿行」，
+结果发现 `DELETE /api/admin/users/:id` 只清 `orders/trades/holdings/loans/p2p_loans/...`，
+**没有清 `margin_accounts` / `margin_positions`**，也没把信用持仓算进拒删的 `blockers`。
+
+后果不是「留点垃圾」，而是**结算卡死**：`MarginSettlementHook.checkMaintenance`
+遍历 `margin_accounts` → `marginState()` → `creditOf()` 读 `users.credit`，
+用户不存在即抛 `UNAUTHORIZED` → **整个 tick 事务回滚**。
+
+修复（`70821ea` 之后的一个提交）：
+
+- `admin.ts`：删 `users` 行之前先删这两张表；`blockers` 加 `openMargin`
+  （未平持仓 **+** 未偿本息，只算持仓会漏掉「担保股票已卖光但还欠券商钱」）。
+- `margin.ts` 的 `reconcile`：兜底清理孤儿行（管旧账、管半删状态），
+  只删 margin 两张表、绝不动 ledger。
+- 测试 4 例（域 2 + API 3，其中 API 那 3 例里 1 例是「只开账户无持仓可直删」）：
+  修复前全红，两例报错正是 `Error: not logged in`。
+
+> 教训：**新增一张没有外键的表，就要顺手回答「用户被删时它怎么办」。**
+> 这个仓库的 `DELETE /api/admin/users/:id` 是一份「从属表清单」，
+> 加表时如果没想起来它，缺陷会在几天后以完全无关的形态（结算卡死）爆出来。
 
 ---
 

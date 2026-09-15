@@ -13,6 +13,7 @@ import { valuation } from '../domain/portfolio.js';
 import { auditGlobal, auditUser } from '../core/ledger.js';
 import { TICK_MS, TICKS_PER_DAY } from '../core/clock.js';
 import { createUser } from './auth.js';
+import { isWhitelistedKey, applyOverride } from '../config/overrides.js';
 
 export interface AdminDeps { db: DB; cfg: Config; now: () => number; dataDir?: string }
 
@@ -27,13 +28,8 @@ const TestUserSchema = z.object({
   password: z.string().min(8).max(72),
 });
 
-/** 前缀白名单（带点号，避免 `tradingX` 这类误匹配）。 */
-const CONFIG_WHITELIST = ['trading.', 'credit.', 'loans.', 'work.', 'p2p.'];
-const CONFIG_WHITELIST_EXACT = [
-  'auth.ipRegPerDay',
-  'playerImpactLambda',
-  'playerImpactCap',
-];
+// 白名单与应用逻辑已抽到 `config/overrides.ts` —— 那里同时提供 `loadOverrides()`，
+// 供**启动时**把热改值恢复回 cfg（原来只在 PUT 路由应用，重启即丢）。
 
 export async function registerAdminRoutes(app: FastifyInstance, deps: AdminDeps): Promise<void> {
   const { db, cfg, now, dataDir } = deps;
@@ -296,25 +292,6 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminDeps)
     reply.type('application/octet-stream');
     return reply.send(stream);
   });
-}
-
-/** 该 config 键是否允许热改：精确键全等，其余走路由前缀。 */
-function isWhitelistedKey(key: string): boolean {
-  if (CONFIG_WHITELIST_EXACT.includes(key)) return true;
-  return CONFIG_WHITELIST.some(p => key.startsWith(p));
-}
-
-/** 把 "a.b.c" 形式的 override 原位写入 cfg（顶层节点为对象时逐层深入）。 */
-function applyOverride(cfg: Config, key: string, value: unknown): void {
-  const parts = key.split('.');
-  let node: Record<string, unknown> = cfg as unknown as Record<string, unknown>;
-  for (let i = 0; i < parts.length - 1; i++) {
-    const seg = parts[i]!;
-    const next = node[seg];
-    if (next === null || typeof next !== 'object') return; // 未知路径：忽略
-    node = next as Record<string, unknown>;
-  }
-  node[parts[parts.length - 1]!] = value;
 }
 
 function statSize(p: string): number {

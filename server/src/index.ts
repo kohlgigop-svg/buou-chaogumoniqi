@@ -18,6 +18,7 @@ import { dirname, resolve } from 'node:path';
 import { hash } from '@node-rs/argon2';
 import { openDb, type DB } from './db/database.js';
 import { DEFAULTS, type Config } from './config/defaults.js';
+import { loadOverrides } from './config/overrides.js';
 import { Engine } from './engine/engine.js';
 import { GameClock, TICK_MS, TICKS_PER_DAY } from './core/clock.js';
 import { PlayerMatcher } from './trading/matcher.js';
@@ -144,6 +145,14 @@ async function main(): Promise<void> {
   const genesisDefault = resolveGenesisMs() ?? Math.floor(Date.now() / 3_600_000) * 3_600_000;
   const seedDefault = envInt('MASTER_SEED', Math.floor(Math.random() * 0x7fffffff));
   const { genesisMs, masterSeed } = ensureGenesis(db, seedDefault, genesisDefault);
+
+  // ⚠️ 把 config 表里的热改 override 恢复进 cfg。
+  // 不做这一步，热改就只是「改内存」—— 进程一重启（含每次重新部署）全部退回默认值。
+  // 线上实测过：`auth.ipRegPerDay` 热改成 25，重启后又变回 20。
+  const appliedOverrides = loadOverrides(db, cfg);
+  if (appliedOverrides.length > 0) {
+    console.log(`[bootstrap] 已恢复 ${appliedOverrides.length} 条热改配置: ${appliedOverrides.join(', ')}`);
+  }
 
   // 撮合器既是 OrderMatcher（引擎驱动）也是 FlowProvider（定价读取上一 tick 净流）。
   const matcher = new PlayerMatcher({ db, cfg, masterSeed });

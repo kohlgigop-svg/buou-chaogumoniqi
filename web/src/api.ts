@@ -199,7 +199,34 @@ export interface LedgerRow {
 }
 
 export interface LoanProduct { termDays: number; rateE6: number; capCents: number }
-export interface BankProducts { credit: number; creditLow: boolean; products: LoanProduct[] }
+
+/**
+ * 借款空间。由服务端 `borrowRoom()` 算好下发 —— **前端不要自己算**。
+ *
+ * ⚠️ `products[].capCents` 只是**授信**上限，实际能借到的是 `room`。额度改成公式
+ *    （信誉分 × ¥5,000）后授信上限会**超过**杠杆上限：600 分玩家看到 ¥3,000,000，
+ *    但净资产 ¥1,000,000 时杠杆只允许 ¥2,000,000。曾经 UI 只认 `capCents`，
+ *    于是输入框留空时提交的正是那个借不到的数，点一下「借款」必然 403。
+ *
+ * `binding` 说明是哪条闸门在卡：'leverage' ⇒ 受净资产×信誉分÷300 所限（额度还有剩）。
+ */
+export interface BorrowRoom {
+  capCents: number;
+  creditRoom: number;
+  leverageRoom: number;
+  /** **这就是 UI 该显示的「当前可用」**，也是服务端真正会放行的最大金额。 */
+  room: number;
+  binding: 'credit' | 'leverage';
+  leverageCap: number;
+  /** 杠杆系数（服务端 `cfg.loans.leverageDivisor`，可热改）。文案要写它就别写死。 */
+  divisor: number;
+  netWorth: number;
+  openPrincipal: number;
+  loansOutstanding: number;
+}
+export interface BankProducts {
+  credit: number; creditLow: boolean; products: LoanProduct[]; room: BorrowRoom;
+}
 export interface LoanRow {
   id: number; principal: number; outstanding: number; accruedInterest: number; owedTotal: number;
   rateE6: number; termDays: number; startDay: number; dueDay: string | number; status: string;

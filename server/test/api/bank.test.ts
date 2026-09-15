@@ -52,6 +52,37 @@ describe('/api/bank/products', () => {
     ]);
   });
 
+  it('⚠️ 必须返回 room（真实可借上限），且它就是服务端放行的边界', async () => {
+    // 回归背景：额度改成公式后 `capCents`（¥3,000,000）会**超过**杠杆上限（¥2,000,000）。
+    // 只发 capCents 会让银行页显示一个借不到的数字 —— 输入框留空时前端提交的正是它，
+    // 玩家点一下「借款」必然 403 LEVERAGE。故 room 必须一起发，且必须等于放行边界。
+    const res = await app.inject({ method: 'GET', url: '/api/bank/products', cookies: { sid } });
+    const room = res.json().room;
+    // 默认初始资金 100_000_000 分 < 阈值 150_000_000 分 ⇒ 杠杆是紧的那条
+    expect(room.binding).toBe('leverage');
+    expect(room.capCents).toBe(300_000_000);
+    expect(room.creditRoom).toBe(300_000_000);
+    expect(room.leverageRoom).toBe(200_000_000);
+    expect(room.room).toBe(200_000_000);
+
+    // 借 room 必须成功；借 room+1 必须被拒 —— 否则 UI 显示的上限就是假的
+    const ok = await app.inject({ method: 'POST', url: '/api/bank/loans', cookies: { sid },
+      payload: { amount: room.room, termDays: 20 } });
+    expect(ok.statusCode).toBe(200);
+  });
+
+  it('⚠️ 只发 capCents 时 UI 会显示借不到的数字（本用例记录这个历史缺陷）', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/bank/products', cookies: { sid } });
+    const cap = res.json().products[0].capCents;
+    // 前端留空提交的正是 `cap`（见 web/src/pages/Bank.tsx 的 parseBorrowInput 默认值）
+    const bad = await app.inject({ method: 'POST', url: '/api/bank/loans', cookies: { sid },
+      payload: { amount: cap, termDays: 20 } });
+    expect(bad.statusCode).toBe(403);
+    expect(bad.json().code).toBe('LEVERAGE');
+    // 而 room 才是真正能借到的 —— 两者必须不同，否则本用例失去意义（说明额度不再超杠杆）
+    expect(res.json().room.room).toBeLessThan(cap);
+  });
+
   it('信誉 <500：creditLow=true 且 products 为空', async () => {
     db.prepare('UPDATE users SET credit = 450 WHERE id = ?').run(uid);
     const res = await app.inject({ method: 'GET', url: '/api/bank/products', cookies: { sid } });

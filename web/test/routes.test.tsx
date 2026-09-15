@@ -64,7 +64,12 @@ const LIFE_BODIES: Record<string, unknown> = {
   '/api/jobs': { jobs: [] },
   '/api/shifts': { shifts: [] },
   '/api/abilities': { abilities: {}, kinds: [], nextCourseCost: {} },
-  '/api/bank/products': { credit: 700, creditLow: false, products: [] },
+  // ⚠️ `room` 是**必填**的（服务端 borrowRoom() 的下发形状）：银行页的可借上限只能取它，
+  //    不返回会让页面在渲染期炸掉。桩要跟着契约走，别让页面去兜底 ——
+  //    兜底只会把「契约破了」变成「静默显示 ¥0.00」，更难查。
+  '/api/bank/products': { credit: 700, creditLow: false, products: [],
+    room: { capCents: 0, creditRoom: 0, leverageRoom: 0, room: 0, binding: 'credit',
+      leverageCap: 0, divisor: 300, netWorth: 0, openPrincipal: 0, loansOutstanding: 0 } },
   '/api/bank/loans': { credit: 700, loans: [] },
   '/api/credit': { credit: 700, events: [] },
 };

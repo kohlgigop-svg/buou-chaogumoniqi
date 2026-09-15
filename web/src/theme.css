@@ -785,6 +785,9 @@ body {
 .product__actions { display: flex; align-items: center; gap: var(--sp-2); }
 .product__actions .order__input { flex: 1; }
 .product__err { font-size: var(--fs-xs); color: var(--warning); }
+/* 额度上限 ≠ 可借上限时的原因说明（受杠杆所限）。用 warning 色而非 muted：
+   这是"为什么数字比上面那个小"的解释，不该被当脚注忽略。 */
+.product__note { font-size: var(--fs-xs); color: var(--warning); line-height: 1.5; }
 
 /* —— 银行：借款条件 —— */
 .bank__conditions {

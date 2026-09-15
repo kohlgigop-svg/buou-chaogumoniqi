@@ -6,7 +6,7 @@ import { BorrowSchema, RepaySchema } from '@pt/shared';
 import type { DB } from '../db/database.js';
 import type { Config } from '../config/defaults.js';
 import type { Engine } from '../engine/engine.js';
-import { loanProducts, borrow, repay, listLoans } from '../domain/loans.js';
+import { loanProducts, borrow, borrowRoom, repay, listLoans } from '../domain/loans.js';
 
 export interface BankDeps { db: DB; cfg: Config; engine: Engine }
 
@@ -15,11 +15,19 @@ const IdParamSchema = z.object({ id: z.coerce.number().int().positive() });
 export async function registerBankRoutes(app: FastifyInstance, deps: BankDeps): Promise<void> {
   const { db, cfg, engine } = deps;
 
-  /** 产品表：按当前信誉分给出各期限档的额度与日息；<500 返回空数组 + creditLow 标记。 */
+  /**
+   * 产品表：按当前信誉分给出各期限档的额度与日息；<500 返回空数组 + creditLow 标记。
+   *
+   * ⚠️ `room` **必须**一起返回：`products[].capCents` 只是**授信**上限，而实际能借到的是
+   *    `min(授信剩余, 杠杆空间)`。额度改成公式后授信上限（¥3,000,000）会**超过**杠杆上限
+   *    （¥2,000,000），只发 `capCents` 会让 UI 显示一个借不到的数字（详见 borrowRoom 注释）。
+   *    服务端算好发下来，前端**不要**自己再算一遍 —— 那只是把公式抄到第二个地方。
+   */
   app.get('/api/bank/products', { preHandler: app.requireAuth }, async (req) => {
     const score = req.user.credit;
     return { credit: score, creditLow: score < cfg.credit.min + 150, // 500 门槛线
-      products: loanProducts(cfg, score) };
+      products: loanProducts(cfg, score),
+      room: borrowRoom(db, cfg, req.user.id) };
   });
 
   /** 借款：门槛与放款见 domain/loans.borrow（金额单位：分）。 */

@@ -5,7 +5,7 @@ import { openDb, ACC, type DB } from '../../src/db/database.js';
 import { DEFAULTS, type Config } from '../../src/config/defaults.js';
 import { Engine } from '../../src/engine/engine.js';
 import { applyCreditEvent, shiftCredit } from '../../src/domain/credit.js';
-import { loanProducts, borrow, repay, LoanSettlementHook } from '../../src/domain/loans.js';
+import { loanProducts, borrow, borrowRoom, repay, LoanSettlementHook } from '../../src/domain/loans.js';
 import { valuation } from '../../src/domain/portfolio.js';
 import { auditGlobal, post } from '../../src/core/ledger.js';
 
@@ -215,6 +215,101 @@ describe('borrow：门槛矩阵', () => {
       accrued_interest: 0, status: 'active', rate_e6: 400, term_days: 60 });
     expect(l.due_day).toBe(1 + 60);
     auditGlobal(db);
+  });
+});
+
+// ---------- 可借上限（UI 展示的口径） ----------
+
+describe('borrowRoom：把「还能借多少」收敛成单一实现', () => {
+  /**
+   * 背景（2026-09-15）：额度改成公式（信誉分 × ¥5,000）后，**额度上限超过了杠杆上限**，
+   * 于是银行页那个「额度上限 ¥3,000,000 / 当前可用 ¥3,000,000」成了借不到的数字 ——
+   * 输入框留空时前端提交的正是它，玩家点一下「借款」必然 403 LEVERAGE。
+   * 改之前额度上限 ¥50,000 恒小于杠杆上限 ¥2,000,000，UI 从不说谎，所以没人发现。
+   *
+   * 修法不是「前端再算一遍」——那只是把同一个公式抄到第二个地方，迟早漂移。
+   * 而是把「还能借多少」收敛成 **borrowRoom() 一个实现**，闸门与 UI 共用。
+   */
+  /** 走 ledger 给用户补净资产（保证总账平衡）。 */
+  function topUp(id: number, amount: number): void {
+    post(db, 1, 0, 'topup', id, [
+      { account: ACC.MARKET, bucket: 'A', amount: -amount, kind: 'TEST_TOPUP' },
+      { account: id, bucket: 'A', amount: amount, kind: 'TEST_TOPUP' },
+    ]);
+  }
+
+  it('room 恰好是**真正能借到的最大金额**：借 room 成功、借 room+1 被拒', () => {
+    // ⚠️ 这条是本函数的全部意义：room 不能是「另一个算出来的数」，
+    //    必须是「借 room 一定成功、借 room+1 一定失败」的那个边界。
+    //    默认初始资金 100_000_000 分 < 阈值 150_000_000 分 ⇒ 杠杆是紧的那条。
+    setCredit(uid, 600);
+    const r = borrowRoom(db, cfg, uid);
+    expect(r.capCents).toBe(600 * cfg.loans.capPerCreditPoint);   // 300_000_000
+    expect(r.creditRoom).toBe(300_000_000);
+    expect(r.leverageRoom).toBe(200_000_000);                     // 100_000_000 × 600/300
+    expect(r.binding).toBe('leverage');
+    expect(r.room).toBe(200_000_000);
+
+    expect(borrow(db, cfg, engine, uid, r.room, 20)).toBeGreaterThan(0);
+    // 借满后空间归零（未偿本金与本息都到位）
+    expect(borrowRoom(db, cfg, uid).room).toBe(0);
+  });
+
+  it('借 room+1 被拒，且拒绝理由与 binding 一致', () => {
+    setCredit(uid, 600);
+    const r = borrowRoom(db, cfg, uid);
+    expect(() => borrow(db, cfg, engine, uid, r.room + 1, 20))
+      .toThrowError(/exceeds leverage cap/);
+  });
+
+  it('净资产越过阈值后紧的那条翻转成授信额度（binding 会变）', () => {
+    setCredit(uid, 600);
+    // 补到 200_000_000 分 > 阈值 150_000_000 分 ⇒ 授信额度（300_000_000）成为紧的那条
+    topUp(uid, 100_000_000);
+    const r = borrowRoom(db, cfg, uid);
+    expect(r.binding).toBe('credit');
+    expect(r.room).toBe(r.creditRoom);
+    expect(borrow(db, cfg, engine, uid, r.room, 20)).toBeGreaterThan(0);
+  });
+
+  it('净资产 ≤ 0 时 room = 0（UI 该显示 0，不是负额度）', () => {
+    setCredit(uid, 700);
+    const l = borrow(db, cfg, engine, uid, 1_000_000, 20);
+    db.prepare('UPDATE loans SET outstanding = 0, accrued_interest = ? WHERE id = ?')
+      .run(DEFAULTS.auth.initialCash + 5_000_000, l);
+    expect(valuation(db, uid).totalAssets).toBeLessThan(0);
+    const r = borrowRoom(db, cfg, uid);
+    expect(r.room).toBe(0);
+    expect(r.leverageRoom).toBe(0);
+  });
+
+  it('信誉分 < 500 时 room = 0（拒贷者没有可借上限可展示）', () => {
+    setCredit(uid, 480);
+    const r = borrowRoom(db, cfg, uid);
+    expect(r.room).toBe(0);
+    expect(r.capCents).toBe(0);
+  });
+
+  it('两条闸门各按自己的口径扣减：授信扣**未偿本金**、杠杆扣**未偿本息**', () => {
+    // 规格 §9：额度看本金，杠杆看本息。若哪天有人"顺手统一"成一个口径，
+    // room 就会与实际放行金额错开 —— 这条把它钉住。
+    setCredit(uid, 600);
+    topUp(uid, 100_000_000);                       // 净资产 200_000_000 分
+    const l = borrow(db, cfg, engine, uid, 10_000_000, 20);
+    db.prepare('UPDATE loans SET accrued_interest = ? WHERE id = ?').run(1_000_000, l);
+
+    const r = borrowRoom(db, cfg, uid);
+    // ⚠️ 别写死 400_000_000：借出与计提利息都会改变净资产（借出时现金+负债同增、净额不变，
+    //    但计提利息会实打实压低净资产）。从实际净资产推导，配置一变也不会静默失配。
+    const nw = valuation(db, uid).totalAssets;
+    expect(nw).toBe(200_000_000 - 1_000_000);
+    expect(r.leverageCap).toBe(Math.round(nw * 600 / 300));
+    expect(r.openPrincipal).toBe(10_000_000);            // 只算本金
+    expect(r.loansOutstanding).toBe(11_000_000);         // 本金 + 已计提利息
+    expect(r.creditRoom).toBe(300_000_000 - 10_000_000);
+    expect(r.leverageRoom).toBe(r.leverageCap - r.loansOutstanding);
+    expect(r.binding).toBe('credit');
+    expect(r.room).toBe(r.creditRoom);
   });
 });
 

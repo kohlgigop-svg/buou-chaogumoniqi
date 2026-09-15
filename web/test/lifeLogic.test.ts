@@ -3,11 +3,11 @@ import {
   ABILITY_ORDER, ABILITY_LABEL, MAX_LEVEL, COURSE_HOURS_PER_LEVEL,
   abilityCells, radarPoint, radarVertices, toPointsAttr, axisLabelPoint, gridRing,
   requirementGap, wageBonusPct, shiftBlockReason, shiftStatusLabel, shiftTone,
-  shiftHours, shiftCancellable, loanSummary, remainingCredit, loanRateLabel,
+  shiftHours, shiftCancellable, loanSummary, borrowableRoom, leverageNote, loanRateLabel,
   loanStatusLabel, loanTone, parseRepayInput, parseBorrowInput, creditDeltaTone,
   creditReasonLabel, repayable, borrowConditions,
 } from '../src/pages/lifeLogic.js';
-import type { JobRow, ShiftRow, LoanRow, LoanProduct } from '../src/api.js';
+import type { JobRow, ShiftRow, LoanRow, LoanProduct, BankProducts, BorrowRoom } from '../src/api.js';
 
 // ---------- 工厂 ----------
 
@@ -28,6 +28,16 @@ function loan(over: Partial<LoanRow> = {}): LoanRow {
 
 const product = (over: Partial<LoanProduct> = {}): LoanProduct =>
   ({ termDays: 20, rateE6: 500, capCents: 5_000_000, ...over });
+
+/** 服务端 `borrowRoom()` 的下发形状。默认：授信剩余 ¥50,000、杠杆空间 ¥20,000（杠杆在卡）。 */
+const room = (over: Partial<BorrowRoom> = {}): BorrowRoom => ({
+  capCents: 5_000_000, creditRoom: 5_000_000, leverageRoom: 2_000_000, room: 2_000_000,
+  binding: 'leverage', leverageCap: 2_000_000, divisor: 300,
+  netWorth: 1_000_000, openPrincipal: 0, loansOutstanding: 0, ...over,
+});
+
+const bank = (over: Partial<BankProducts> = {}): BankProducts =>
+  ({ credit: 600, creditLow: false, products: [product()], room: room(), ...over });
 
 // ---------- 能力 ----------
 
@@ -319,32 +329,44 @@ describe('loanSummary', () => {
   });
 });
 
-describe('remainingCredit', () => {
-  it('额度上限 − 未偿本金', () => {
-    const r = remainingCredit([product({ capCents: 5_000_000 })], [loan({ outstanding: 2_000_000 })]);
-    expect(r).toBe(3_000_000);
+describe('borrowableRoom', () => {
+  it('直接取服务端算好的 room', () => {
+    expect(borrowableRoom(bank({ room: room({ room: 3_000_000 }) }))).toBe(3_000_000);
   });
 
-  it('⚠️ 扣的是「未偿本金」而非「应还总额」（与服务端 borrow 同口径）', () => {
-    const r = remainingCredit(
-      [product({ capCents: 5_000_000 })],
-      [loan({ outstanding: 2_000_000, accruedInterest: 999_999, owedTotal: 2_999_999 })],
-    );
-    expect(r).toBe(3_000_000);           // 不是 2,000,001
+  it('⚠️ 取的是 min(授信剩余, 杠杆空间)，不是授信上限本身', () => {
+    // 这正是「UI 说能借 ¥3,000,000、服务端只放 ¥2,000,000」那个缺陷的护栏：
+    // 额度改成公式后授信上限会超过杠杆上限，用 capCents 会显示一个借不到的数字。
+    const b = bank({
+      products: [product({ capCents: 300_000_000 })],
+      room: room({ capCents: 300_000_000, creditRoom: 300_000_000,
+        leverageRoom: 200_000_000, room: 200_000_000 }),
+    });
+    expect(borrowableRoom(b)).toBe(200_000_000);
+    expect(borrowableRoom(b)).not.toBe(b.products[0]!.capCents);
   });
 
-  it('已结清贷款不占额度', () => {
-    expect(remainingCredit([product({ capCents: 5_000_000 })], [loan({ status: 'repaid', outstanding: 0 })]))
-      .toBe(5_000_000);
+  it('负数夹到 0（不该显示负额度）', () => {
+    expect(borrowableRoom(bank({ room: room({ room: -1 }) }))).toBe(0);
   });
 
-  it('额度用尽返回 0 而非负数', () => {
-    expect(remainingCredit([product({ capCents: 2_000_000 })], [loan({ outstanding: 3_000_000 })]))
-      .toBe(0);
+  it('信誉 <500（无档位、room 全 0）返回 0', () => {
+    const b = bank({ products: [], room: room({ capCents: 0, creditRoom: 0,
+      leverageRoom: 0, room: 0, binding: 'credit' }) });
+    expect(borrowableRoom(b)).toBe(0);
+  });
+});
+
+describe('leverageNote', () => {
+  it('杠杆在卡时给出人话说明，且系数取自服务端（不写死 300）', () => {
+    const n = leverageNote(bank({ room: room({ binding: 'leverage', divisor: 200,
+      leverageCap: 3_000_000 }) }));
+    expect(n).toContain('÷ 200');            // 不是写死的 300
+    expect(n).toContain('¥30,000.00');
   });
 
-  it('products 为空（信誉 <500）返回 0', () => {
-    expect(remainingCredit([], [])).toBe(0);
+  it('授信额度在卡时不占位（返回 null）', () => {
+    expect(leverageNote(bank({ room: room({ binding: 'credit' }) }))).toBeNull();
   });
 });
 
@@ -436,5 +458,18 @@ describe('borrowConditions', () => {
 
   it('无档位（信誉 <500）时只给门槛', () => {
     expect(borrowConditions([])).toEqual(['信誉分 ≥ 500']);
+  });
+
+  it('⚠️ 杠杆系数取自服务端，不写死 300（leverageDivisor 可热改）', () => {
+    const c = borrowConditions([product()], room({ divisor: 200, leverageCap: 3_000_000 }));
+    expect(c.join('|')).toContain('÷ 200');
+    expect(c.join('|')).not.toContain('÷ 300');
+    expect(c.join('|')).toContain('¥30,000.00');
+  });
+
+  it('room 缺席（理论不该发生）时不写具体系数，免得写个错的', () => {
+    const c = borrowConditions([product()], null);
+    expect(c.join('|')).toContain('杠杆系数');
+    expect(c.join('|')).not.toMatch(/÷ \d/);
   });
 });

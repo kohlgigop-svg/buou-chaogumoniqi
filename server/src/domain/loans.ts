@@ -45,6 +45,76 @@ function loadLoan(db: DB, loanId: number): LoanRow {
 /** 未偿本息合计（含已计提利息）。 */
 function owed(l: LoanRow): Cents { return l.outstanding + l.accrued_interest; }
 
+/** 借款空间（分）。`room` 就是「还能借多少」，闸门与 UI 共用同一个数。 */
+export interface BorrowRoom {
+  /** 授信额度（公式值：信誉分 × capPerCreditPoint）。<500 分时为 0。 */
+  capCents: Cents;
+  /** 授信额度**剩余** = 额度 − 未偿**本金**合计（闸门 5 的口径），下限 0。 */
+  creditRoom: Cents;
+  /** 杠杆空间 = 净资产 × 分数 / divisor − 未偿**本息**合计（闸门 6 的口径），下限 0。 */
+  leverageRoom: Cents;
+  /** 实际可借 = min(creditRoom, leverageRoom)。**这就是 UI 该显示的「当前可用」。** */
+  room: Cents;
+  /** 紧的那一条。UI 用它解释「为什么额度写着 3,000,000 却只能借 2,000,000」。 */
+  binding: 'credit' | 'leverage';
+  /** 杠杆上限原值（未减未偿本息），仅用于错误文案与展示。 */
+  leverageCap: Cents;
+  /**
+   * 杠杆系数（`cfg.loans.leverageDivisor`，**可热改**）。
+   * 下发它是为了让前端文案能写出真实系数 —— 文案里写死 300 会在运营调参后说谎。
+   */
+  divisor: number;
+  /** 借款前净资产；≤ 0 时杠杆空间为零。 */
+  netWorth: Cents;
+  /** 未偿本金合计（授信口径）。 */
+  openPrincipal: Cents;
+  /** 未偿本息合计（杠杆口径）。 */
+  loansOutstanding: Cents;
+}
+
+/**
+ * 计算「还能借多少」。**这是本项目里唯一一处算这件事的代码** ——
+ * `borrow()` 的两道闸门与 `/api/bank/products` 都走它，所以 UI 展示的数字
+ * 与实际放行金额**不可能漂移**。
+ *
+ * ⚠️ 为什么必须收敛成一处（2026-09-15 的事故）：额度改成公式（信誉分 × ¥5,000）后，
+ *    额度上限（¥3,000,000）**超过了**杠杆上限（¥2,000,000），于是银行页那个
+ *    「当前可用 ¥3,000,000」成了借不到的数字 —— 输入框留空时前端提交的正是它，
+ *    玩家点一下「借款」必然 403 LEVERAGE。改之前额度上限 ¥50,000 恒小于杠杆上限，
+ *    UI 从不说谎，所以谁也没发现。
+ *    修法**不是**「前端再算一遍杠杆」——那只是把同一个公式抄到第二个地方，迟早漂移。
+ *
+ * ⚠️ 两道闸门**都正比于信誉分**，故谁是紧的那条只取决于净资产：
+ *    `creditRoom < leverageRoom ⟺ 净资产 > capPerCreditPoint × leverageDivisor`
+ *    （默认 500_000 × 300 = 150_000_000 分 = ¥1,500,000）。
+ */
+export function borrowRoom(db: DB, cfg: Config, userId: number): BorrowRoom {
+  const score = (db.prepare('SELECT credit c FROM users WHERE id = ?').get(userId) as
+    { c: number } | undefined)?.c ?? 0;
+  const tier = tierOf(cfg, score);
+  const capCents = tier?.capCents ?? 0;
+
+  const openPrincipal = (db.prepare(`SELECT COALESCE(SUM(outstanding),0) v FROM loans
+    WHERE user_id = ? AND status IN ('active','grace','overdue')`).get(userId) as { v: number }).v;
+  const creditRoom = Math.max(0, capCents - openPrincipal);
+
+  const v = valuation(db, userId);
+  // 净资产 ≤ 0 时杠杆空间为零。**不要**把负值送进 roundHalfUpDiv（其契约要求非负被除数，
+  // 否则抛 "bad dividend" → 500/进程崩溃），所以先夹住再算。
+  const leverageCap = v.totalAssets > 0
+    ? roundHalfUpDiv(v.totalAssets * score, cfg.loans.leverageDivisor)
+    : 0;
+  const leverageRoom = Math.max(0, leverageCap - v.loansOutstanding);
+
+  return {
+    capCents, creditRoom, leverageRoom,
+    room: Math.min(creditRoom, leverageRoom),
+    binding: creditRoom <= leverageRoom ? 'credit' : 'leverage',
+    leverageCap, divisor: cfg.loans.leverageDivisor, netWorth: v.totalAssets,
+    openPrincipal, loansOutstanding: v.loansOutstanding,
+  };
+}
+
 /**
  * 借款。门槛（按此顺序，先到先拒）：
  *   1 信誉 ≥ 500（否则 CREDIT_LOW）
@@ -81,22 +151,19 @@ export function borrow(db: DB, cfg: Config, engine: Engine, userId: number,
     WHERE user_id = ? AND status IN ('grace','overdue')`).get(userId) as { c: number }).c;
   if (blocking > 0) throw new AppError('OVERDUE_EXISTS', 403, 'has overdue loan, no new loan allowed');
 
-  const openPrincipal = (db.prepare(`SELECT COALESCE(SUM(outstanding),0) v FROM loans
-    WHERE user_id = ? AND status IN ('active','grace','overdue')`).get(userId) as { v: number }).v;
-  if (openPrincipal + amount > tier.capCents) {
-    throw new AppError('LOAN_LIMIT', 403, `exceeds credit cap ${tier.capCents}`);
+  // ⚠️ 闸门 5、6 与 UI 展示走**同一个** borrowRoom()。不要在这里另写一份金额比较 ——
+  //    那正是「UI 说能借、服务端说不能」这类事故的成因（见 borrowRoom 的注释）。
+  const r = borrowRoom(db, cfg, userId);
+  if (amount > r.creditRoom) {
+    throw new AppError('LOAN_LIMIT', 403, `exceeds credit cap ${r.capCents}`);
   }
-
-  const v = valuation(db, userId);
-  // 杠杆上限按"借款前净资产"计（规格 §9：与查表额度取严）。
   // 净资产 ≤ 0 时杠杆空间为零：必须先以明确的 LEVERAGE 拒绝，而不能把负值送进
   // roundHalfUpDiv（其契约要求非负被除数，否则抛 "bad dividend" → 500/进程崩溃）。
-  if (v.totalAssets <= 0) {
+  if (r.netWorth <= 0) {
     throw new AppError('LEVERAGE', 403, 'net worth is not positive, no borrowing capacity');
   }
-  const leverageCap = roundHalfUpDiv(v.totalAssets * score, cfg.loans.leverageDivisor);
-  if (v.loansOutstanding + amount > leverageCap) {
-    throw new AppError('LEVERAGE', 403, `exceeds leverage cap ${leverageCap}`);
+  if (amount > r.leverageRoom) {
+    throw new AppError('LEVERAGE', 403, `exceeds leverage cap ${r.leverageCap}`);
   }
 
   const dueDay = day + termDays;

@@ -6,7 +6,7 @@
 // - `rateE6` 是**日息 e6**（300 = 0.03%/日），**不是年化**；展示走 `fmtRate`。
 // - 时间一律是**游戏分钟（gmin）**：1 游戏日 = 1440 gmin，1 游戏分 = 2.5s 墙钟。
 import { fmtMoney, fmtRate } from '../format.js';
-import type { JobRow, ShiftRow, LoanRow, LoanProduct } from '../api.js';
+import type { JobRow, ShiftRow, LoanRow, LoanProduct, BankProducts, BorrowRoom } from '../api.js';
 
 /** 六维能力的固定顺序与中文名。顺序即雷达图顶点顺序（与「形状」的可比性相关）。 */
 export const ABILITY_ORDER = ['EDU', 'CODE', 'FIN', 'FIT', 'COMM', 'DESIGN'] as const;
@@ -209,12 +209,30 @@ export function loanSummary(loans: LoanRow[]): LoanSummary {
  * ⚠️ 服务端 `borrow` 用的是「未偿**本金**合计」而非应还总额（见 `domain/loans.ts` 第 5 条），
  * 这里必须同口径，否则前端会显示一个服务端不认的额度。
  */
-export function remainingCredit(products: LoanProduct[], loans: LoanRow[]): number {
-  if (products.length === 0) return 0;
-  // 各期限档 capCents 相同（同信誉档），取首档避免误加
-  const cap = products[0]?.capCents ?? 0;
-  const used = loanSummary(loans).outstandingPrincipal;
-  return Math.max(0, cap - used);
+/**
+ * 当前可借上限（分）。**直接取服务端算好的 `room`。**
+ *
+ * ⚠️⚠️ 不要退回「`products[0].capCents` − 未偿本金」那种算法。那只是**授信**上限，
+ * 漏掉了第二条闸门（未偿本息 ≤ 净资产 × 信誉分 ÷ 杠杆系数）。额度改成公式
+ * （信誉分 × ¥5,000）后，600 分玩家的授信上限（¥3,000,000）会**超过**杠杆上限
+ * （净资产 ¥1,000,000 时只有 ¥2,000,000），于是 UI 显示一个借不到的数字 ——
+ * 输入框留空时提交的正是它，玩家点一下「借款」必然 403 LEVERAGE。
+ * 现在服务端 `borrowRoom()` 是唯一实现，UI 与闸门共用，不可能再漂移。
+ */
+export function borrowableRoom(bank: BankProducts): number {
+  return Math.max(0, bank.room.room);
+}
+
+/**
+ * 「为什么可借上限比额度上限小」的人话说明；不是杠杆在卡时返回 `null`（不必占位）。
+ *
+ * ⚠️ 杠杆系数取 `room.divisor`（服务端下发），**不要写死 300** —— `leverageDivisor`
+ *    在 `loans.` 热改白名单里，写死会在运营调参后说谎。
+ */
+export function leverageNote(bank: BankProducts): string | null {
+  if (bank.room.binding !== 'leverage') return null;
+  return `受杠杆限制：未偿本息不得超净资产 × 信誉分 ÷ ${bank.room.divisor}`
+    + `（当前上限 ${fmtMoney(bank.room.leverageCap)}）`;
 }
 
 /**
@@ -297,15 +315,21 @@ export const CREDIT_LOW_HINT =
  * ⚠️ 额度**不再按档位查表**，而是服务端按「信誉分 × 每分额度」算出的公式值
  *    （`capCents` 即该结果），故这里只说「授信额度」；**不要在文案里写死倍率** ——
  *    倍率是服务端配置（`loans.capPerCreditPoint`，可热改），写死会随配置漂移。
+ *    杠杆系数同理，取自 `room.divisor`。
  */
-export function borrowConditions(products: LoanProduct[]): string[] {
+export function borrowConditions(products: LoanProduct[], room: BorrowRoom | null = null): string[] {
   if (products.length === 0) return ['信誉分 ≥ 500'];
   const cap = products[0]?.capCents ?? 0;
   const rate = products[0]?.rateE6 ?? 0;
+  // room 缺席（理论上不会：与后端同镜像部署）时不写具体系数，免得写个错的。
+  const lev = room === null
+    ? '未偿本息不超「净资产 × 信誉分 ÷ 杠杆系数」'
+    : `未偿本息不超净资产 × 信誉分 ÷ ${room.divisor}`
+      + `（当前上限 ${fmtMoney(room.leverageCap)}）`;
   return [
     `信誉分 ≥ 500`,
     `授信额度 ≤ ${fmtMoney(cap)}（随信誉分线性变化）`,
     `日息 ${fmtRate(rate)}（按授信档位浮动）`,
     `无宽限 / 逾期中的贷款`,
-    `未偿本息不超净资产 × 信誉分 ÷ 300`,
+    lev,
   ];}

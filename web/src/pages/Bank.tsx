@@ -8,7 +8,13 @@
 //
 // 借款的四道服务端闸门（均 403，UI 必须能正确解释）：
 //   CREDIT_LOW（信誉<500）、OVERDUE_EXISTS（有宽限/逾期贷在身）、
-//   LOAN_LIMIT（超档位上限）、LEVERAGE（超净资产×信誉分÷300）
+//   LOAN_LIMIT（超授信额度）、LEVERAGE（超净资产×信誉分÷杠杆系数）
+//
+// ⚠️⚠️ **可借上限一律用服务端下发的 `room`，不要用 `products[].capCents`。**
+//   `capCents` 只是**授信**上限；额度改成公式（信誉分 × ¥5,000）后它会**超过**杠杆上限
+//   （600 分 → 授信 ¥3,000,000，但净资产 ¥1,000,000 时杠杆只给 ¥2,000,000）。
+//   曾经这里用 `Math.min(capCents, 未偿本金剩余)` 当上限，于是输入框留空时提交的
+//   正是那个借不到的数 —— 玩家点一下「借款」必然 403。详见 `api.ts` 的 BorrowRoom。
 import { useCallback, useEffect, useState } from 'react';
 import {
   bankApi, authApi,
@@ -20,7 +26,7 @@ import { Spinner, Empty } from '../components/Spinner.js';
 import ErrorBox from '../components/ErrorBox.js';
 import { errorText } from '../errors.js';
 import {
-  remainingCredit, loanSummary, loanRateLabel, loanStatusLabel, loanTone,
+  borrowableRoom, leverageNote, loanSummary, loanRateLabel, loanStatusLabel, loanTone,
   parseRepayInput, parseBorrowInput, creditDeltaTone, creditReasonLabel,
   repayable, borrowConditions, CREDIT_LOW_HINT, FORCED_LIQ_NOTICE,
 } from './lifeLogic.js';
@@ -94,7 +100,10 @@ export default function Bank(): React.JSX.Element {
 
   const { products, loans, events, credit, me } = data;
   const summary = loanSummary(loans);
-  const remaining = remainingCredit(products.products, loans);
+  // ⚠️ 可借上限取服务端算好的 `room`，**不要**自己用 capCents − 未偿本金 算 ——
+  //    那只是授信上限，会漏掉杠杆约束（见 lifeLogic.borrowableRoom 的注释）。
+  const available = borrowableRoom(products);
+  const note = leverageNote(products);
 
   return (
     <div className="bank">
@@ -111,7 +120,7 @@ export default function Bank(): React.JSX.Element {
           </div>
           <div className="stat">
             <div className="stat__label">可用额度</div>
-            <div className="stat__value num" data-testid="bank-remaining">{fmtMoney(remaining)}</div>
+            <div className="stat__value num" data-testid="bank-remaining">{fmtMoney(available)}</div>
           </div>
           <div className="stat">
             <div className="stat__label">未偿本金</div>
@@ -149,7 +158,8 @@ export default function Bank(): React.JSX.Element {
                 <ProductRow
                   key={p.termDays}
                   product={p}
-                  remaining={remaining}
+                  available={available}
+                  note={note}
                   onBorrow={(amount) => void borrow(amount, p.termDays)}
                 />
               ))}
@@ -157,7 +167,7 @@ export default function Bank(): React.JSX.Element {
             <div className="bank__conditions">
               <div className="bank__conditions-title">借款条件</div>
               <ul>
-                {borrowConditions(products.products).map(c => <li key={c}>{c}</li>)}
+                {borrowConditions(products.products, products.room).map(c => <li key={c}>{c}</li>)}
               </ul>
             </div>
           </>
@@ -201,13 +211,22 @@ export default function Bank(): React.JSX.Element {
 }
 
 /** 单档位：期限 + 日息 + 额度，含金额输入与借款按钮。 */
-function ProductRow({ product, remaining, onBorrow }: {
-  product: LoanProduct; remaining: number; onBorrow: (cents: number) => void;
+function ProductRow({ product, available, note, onBorrow }: {
+  product: LoanProduct;
+  /** **真实可借上限**（服务端 `borrowRoom().room`），不是授信上限。 */
+  available: number;
+  /** 杠杆在卡时的一句说明；不卡时为 null。 */
+  note: string | null;
+  onBorrow: (cents: number) => void;
 }): React.JSX.Element {
   const [text, setText] = useState('');
   const [localErr, setLocalErr] = useState<string | null>(null);
 
-  const cap = Math.min(product.capCents, remaining);
+  // ⚠️ 这里**必须**用服务端的 room，不能用 `product.capCents`：额度改成公式后
+  //    授信上限（¥3,000,000）会超过杠杆上限（¥2,000,000），用它做上限会让
+  //    输入框的 placeholder（也就是留空时提交的默认值）变成借不到的数 ——
+  //    玩家点一下「借款」必然 403。详见 api.ts 的 BorrowRoom 注释。
+  const cap = available;
 
   function submit(): void {
     const r = parseBorrowInput(text === '' ? String(cap / 100) : text);
@@ -227,8 +246,9 @@ function ProductRow({ product, remaining, onBorrow }: {
       </div>
       <div className="product__meta">
         <span className="num">额度上限 {fmtMoney(product.capCents)}</span>
-        <span className="num">当前可用 {fmtMoney(cap)}</span>
+        <span className="num" data-testid="product-available">当前可借 {fmtMoney(cap)}</span>
       </div>
+      {note !== null ? <div className="product__note" data-testid="leverage-note">{note}</div> : null}
       <div className="product__actions">
         <input
           className="order__input num"

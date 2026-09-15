@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
-import type { AuthUser, LoanRow, LoanProduct, CreditEvent, MeView } from '../src/api.js';
+import type { AuthUser, LoanRow, LoanProduct, CreditEvent, MeView, BorrowRoom } from '../src/api.js';
 import { SessionProvider } from '../src/session.js';
 import Bank from '../src/pages/Bank.js';
 
@@ -46,6 +46,7 @@ function json(body: unknown, status = 200): Response {
 
 function route(over: {
   credit?: number; creditLow?: boolean; products?: LoanProduct[];
+  room?: Partial<BorrowRoom>;
   loans?: LoanRow[]; events?: CreditEvent[];
   borrow?: unknown; borrowStatus?: number;
   repay?: unknown; repayStatus?: number;
@@ -60,9 +61,18 @@ function route(over: {
     const method = (init?.method ?? 'GET').toUpperCase();
     if (url === '/api/bank/products') {
       const ps = over.products ?? [product({ termDays: 20 }), product({ termDays: 60 }), product({ termDays: 120 })];
+      // 默认 room：杠杆不卡，可借 = 授信剩余（= 首档 capCents）。
+      // 想验「额度超杠杆」就显式传 room，别改这里 —— 否则一大票用例跟着漂。
+      const cap = ps[0]?.capCents ?? 0;
+      const base: BorrowRoom = {
+        capCents: cap, creditRoom: cap, leverageRoom: cap, room: cap,
+        binding: 'credit', leverageCap: cap, divisor: 300,
+        netWorth: cap, openPrincipal: 0, loansOutstanding: 0,
+      };
       return Promise.resolve(json({
         credit, creditLow: over.creditLow ?? false,
         products: over.creditLow === true ? [] : ps,
+        room: { ...base, ...over.room },
       }));
     }
     if (url.startsWith('/api/bank/loans/') && url.endsWith('/repay')) {
@@ -100,13 +110,16 @@ describe('Bank 授信概览', () => {
     expect(screen.getByTestId('bank-remaining')).toHaveTextContent('¥50,000.00');
   });
 
-  it('⚠️ 可用额度扣的是「未偿本金」而非「应还总额」', async () => {
+  it('⚠️ 可用额度取服务端算好的 `room`，不是前端拿 capCents 自己减', async () => {
+    // 额度改成公式后，授信上限会**超过**杠杆上限，前端自己算就会显示一个借不到的数。
+    // 这里让两者刻意不同：capCents ¥50,000，但服务端说只能借 ¥30,000。
     route({
       products: [product({ capCents: 5_000_000 })],
-      loans: [loan({ outstanding: 2_000_000, accruedInterest: 999_999, owedTotal: 2_999_999 })],
+      room: { capCents: 5_000_000, creditRoom: 5_000_000,
+        leverageRoom: 3_000_000, room: 3_000_000, binding: 'leverage',
+        leverageCap: 3_000_000 },
     });
     renderBank();
-    // 5,000,000 − 2,000,000 = 3,000,000 分 = ¥30,000.00（不是 ¥20,000.01）
     expect(await screen.findByTestId('bank-remaining')).toHaveTextContent('¥30,000.00');
   });
 
@@ -117,9 +130,82 @@ describe('Bank 授信概览', () => {
   });
 
   it('额度用尽显示 ¥0.00 而非负数', async () => {
-    route({ products: [product({ capCents: 2_000_000 })], loans: [loan({ outstanding: 3_000_000 })] });
+    route({ products: [product({ capCents: 2_000_000 })],
+      room: { capCents: 2_000_000, creditRoom: 0, leverageRoom: 0, room: 0,
+        binding: 'credit', leverageCap: 0, openPrincipal: 3_000_000 } });
     renderBank();
     expect(await screen.findByTestId('bank-remaining')).toHaveTextContent('¥0.00');
+  });
+});
+
+describe('⚠️ 额度超杠杆：UI 不得显示借不到的数字（2026-09-15 回归）', () => {
+  // 缺陷现场：额度改成「信誉分 × ¥5,000」后，600 分玩家看到「额度上限 ¥3,000,000 /
+  // 当前可用 ¥3,000,000」，但净资产 ¥1,000,000 时杠杆只允许 ¥2,000,000。
+  // 输入框留空时前端提交的正是 `cap`（= 那个 3,000,000），于是**默认操作必然 403**。
+  // 修法：可借上限一律取服务端的 `room`，并在杠杆在卡时说明原因。
+  const overLeveraged = {
+    products: [product({ capCents: 300_000_000 })],
+    room: { capCents: 300_000_000, creditRoom: 300_000_000,
+      leverageRoom: 200_000_000, room: 200_000_000, binding: 'leverage' as const,
+      leverageCap: 200_000_000, divisor: 300, netWorth: 100_000_000 },
+  };
+
+  it('「当前可借」显示的是杠杆空间，不是额度上限', async () => {
+    route(overLeveraged);
+    renderBank();
+    await screen.findByTestId('product-list');
+    expect(screen.getAllByTestId('product-available')[0]).toHaveTextContent('¥2,000,000.00');
+    // 额度上限照旧显示（它是真实存在的授信值），但**不是**可借上限
+    expect(screen.getAllByTestId('product-row')[0]).toHaveTextContent('额度上限 ¥3,000,000.00');
+  });
+
+  it('杠杆在卡时给出原因，且系数取自服务端（不写死 300）', async () => {
+    route({ ...overLeveraged, room: { ...overLeveraged.room, divisor: 200 } });
+    renderBank();
+    await screen.findByTestId('product-list');
+    const note = (await screen.findAllByTestId('leverage-note'))[0]!.textContent ?? '';
+    expect(note).toContain('受杠杆限制');
+    expect(note).toContain('÷ 200');
+    expect(note).not.toContain('÷ 300');
+  });
+
+  it('杠杆不卡时不显示该说明（不占位）', async () => {
+    route({ products: [product({ capCents: 5_000_000 })] });
+    renderBank();
+    await screen.findByTestId('product-list');
+    expect(screen.queryByTestId('leverage-note')).toBeNull();
+  });
+
+  it('⚠️ 输入框留空直接点「借款」→ 提交的正是服务端会放行的金额（不是额度上限）', async () => {
+    route({ ...overLeveraged, borrow: { loanId: 9, loans: [] } });
+    renderBank();
+    await screen.findByTestId('product-list');
+    // 什么都不填，直接点借款 —— 这是玩家的默认路径，以前必然 403
+    fireEvent.click(screen.getAllByTestId('borrow')[0] as Element);
+    const call = await vi.waitFor(() => {
+      const c = fetchMock.mock.calls.find(x =>
+        String(x[0]) === '/api/bank/loans' && (x[1] as RequestInit)?.method === 'POST');
+      expect(c).toBeTruthy();
+      return c as NonNullable<typeof c>;
+    });
+    const body = JSON.parse(String((call![1] as RequestInit).body));
+    expect(body.amount).toBe(200_000_000);        // 杠杆空间，不是 300_000_000
+    expect(body.amount).not.toBe(300_000_000);
+  });
+
+  it('本地拦截用的也是 room：填一个「超额度但没超杠杆」的数不该被前端拦下', async () => {
+    // 250_000_000 分 > 额度上限？不，= 额度上限内。取 250_000_000（≤ 300_000_000）
+    // 但 > 200_000_000（杠杆空间）→ 前端应本地拦下，不发请求。
+    route(overLeveraged);
+    renderBank();
+    await screen.findByTestId('product-list');
+    fireEvent.change(screen.getAllByTestId('borrow-amount')[0] as Element,
+      { target: { value: '2500000' } });
+    fireEvent.click(screen.getAllByTestId('borrow')[0] as Element);
+    expect(await screen.findByText(/超过可用额度 ¥2,000,000\.00/)).toBeInTheDocument();
+    const posts = fetchMock.mock.calls.filter(x =>
+      String(x[0]) === '/api/bank/loans' && (x[1] as RequestInit)?.method === 'POST');
+    expect(posts).toHaveLength(0);
   });
 });
 

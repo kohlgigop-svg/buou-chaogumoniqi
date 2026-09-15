@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { openDb } from '../../src/db/database.js';
-import { seedStocks } from '../../src/seed/stocks.js';
+import { seedStocks, STOCK_SEEDS } from '../../src/seed/stocks.js';
 import { publishReport, reportDueCodes } from '../../src/engine/reports.js';
 import { applyStTransitions, declareDividends, applyExDividend, scheduleIpoIfNeeded, processDelistings } from '../../src/engine/corporate.js';
 import { DEFAULTS } from '../../src/config/defaults.js';
@@ -12,7 +12,7 @@ describe('corporate lifecycle', () => {
     const db = setup(); const seen = new Map<string, number>();
     for (let d = 1; d <= 60; d++) for (const c of reportDueCodes(db, d, DEFAULTS))
       seen.set(c, (seen.get(c) ?? 0) + 1);
-    expect(seen.size).toBe(48);
+    expect(seen.size).toBe(STOCK_SEEDS.length);
     for (const v of seen.values()) expect(v).toBe(1);
   });
   it('连亏2期→ST，再亏1期→delisting，20日后摘牌', () => {
@@ -38,14 +38,14 @@ describe('corporate lifecycle', () => {
     expect(after.q).toBe(before.p - 200); // R9②：现价同步除权（seed 时 price=prev_close），分红不是白送钱
     expect(after.u).toBe(Math.round((before.p - 200) * 1.1));
   });
-  it('摘牌后触发补位 IPO，池子回到 48', () => {
+  it('摘牌后触发补位 IPO，池子回到 poolTarget', () => {
     const db = setup();
     db.prepare(`UPDATE stocks SET status='delisted' WHERE code='600619'`).run();
     scheduleIpoIfNeeded(db, 150, Rng.fromSeed(2, 150, 'ipo'), DEFAULTS); // 记入 pending（实现里用 config 表存 pending json）
     let listed = 0;
     for (let d = 151; d <= 160; d++) { scheduleIpoIfNeeded(db, d, Rng.fromSeed(2, d, 'ipo'), DEFAULTS);
-      listed = (db.prepare(`SELECT COUNT(*) c FROM stocks WHERE status!='delisted'`).get() as any).c; if (listed === 48) break; }
-    expect(listed).toBe(48);
+      listed = (db.prepare(`SELECT COUNT(*) c FROM stocks WHERE status!='delisted'`).get() as any).c; if (listed === DEFAULTS.poolTarget) break; }
+    expect(listed).toBe(DEFAULTS.poolTarget);
     const neu = db.prepare(`SELECT code,sector FROM stocks WHERE listed_day>1`).get() as any;
     expect(neu.sector).toBe('白酒饮料');
   });

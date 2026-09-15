@@ -207,7 +207,7 @@ export class Engine {
       .run(t, this.serializeState());
   }
 
-  // quotes 惰性构建：NoopMatcher 不读取行情，热路径上省掉每 tick 的 48 行映射；
+  // quotes 惰性构建：NoopMatcher 不读取行情，热路径上省掉每 tick 的全市场行映射；
   // 首次访问时按「定价后状态」SELECT，语义仍是"pricing 之后的全量行情快照"。
   private buildCtx(day: number, tickInDay: number, globalTick: number, phase: Phase, listedOnly: boolean): TickCtx {
     const ctx = { day, tickInDay, globalTick, phase, db: this.db, rng: this.rngPricing,

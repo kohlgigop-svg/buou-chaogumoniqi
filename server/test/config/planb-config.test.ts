@@ -86,7 +86,7 @@ describe('plan-b config 扩展', () => {
 
   it('计划 A 既有键不受影响', () => {
     expect(DEFAULTS.backupKeep).toBe(7);
-    expect(DEFAULTS.poolTarget).toBe(48);
+    expect(DEFAULTS.poolTarget).toBe(110);
   });
 
   it('⚠️ playerImpactLambda 必须足以让「玩家全仓单只」产生可见位移', () => {

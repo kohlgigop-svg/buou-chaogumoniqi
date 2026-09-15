@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { openDb } from '../../src/db/database.js';
-import { seedStocks } from '../../src/seed/stocks.js';
+import { seedStocks, STOCK_SEEDS } from '../../src/seed/stocks.js';
 import { priceTick } from '../../src/engine/pricing.js';
 import { indexLevel, closeDay, openDay } from '../../src/engine/candles.js';
 import { DEFAULTS } from '../../src/config/defaults.js';
@@ -33,7 +33,7 @@ describe('pricing', () => {
   });
   it('收盘写日K与指数K', () => {
     const db = setup(); openDay(db, 1, DEFAULTS); closeDay(db, 1);
-    expect((db.prepare(`SELECT COUNT(*) c FROM candles_day WHERE day=1`).get() as any).c).toBe(48 + 21);
+    expect((db.prepare(`SELECT COUNT(*) c FROM candles_day WHERE day=1`).get() as any).c).toBe(STOCK_SEEDS.length + 21);
   });
 
   /**

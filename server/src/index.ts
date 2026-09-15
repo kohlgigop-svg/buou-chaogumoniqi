@@ -20,8 +20,9 @@ import { openDb, type DB } from './db/database.js';
 import { DEFAULTS, type Config } from './config/defaults.js';
 import { loadOverrides } from './config/overrides.js';
 import { Engine } from './engine/engine.js';
-import { GameClock, TICK_MS, TICKS_PER_DAY } from './core/clock.js';
+import { GameClock, TICK_MS, TICKS_PER_DAY, engineDay } from './core/clock.js';
 import { PlayerMatcher } from './trading/matcher.js';
+import { ensureStockSeeds } from './seed/topup.js';
 import { LoanSettlementHook } from './domain/loans.js';
 import { P2pSettlementHook } from './domain/p2p.js';
 import { WorkSettlementHook } from './domain/work.js';
@@ -152,6 +153,14 @@ async function main(): Promise<void> {
   const appliedOverrides = loadOverrides(db, cfg);
   if (appliedOverrides.length > 0) {
     console.log(`[bootstrap] 已恢复 ${appliedOverrides.length} 条热改配置: ${appliedOverrides.join(', ')}`);
+  }
+
+  // ⚠️ 把种子表里「库里还没有」的股票补齐（老库扩容）。必须在 Engine 之前跑：
+  // 引擎恢复后立刻 catch-up，新股的 tick 行情要跟着一起补。
+  // 幂等；内部会修正指数除数，避免点位跳变（见 seed/topup.ts 的注释）。
+  const topped = ensureStockSeeds(db, engineDay(db));
+  if (topped.added > 0) {
+    console.log(`[bootstrap] 股票池扩容：新增 ${topped.added} 只（指数除数已同步修正）`);
   }
 
   // 撮合器既是 OrderMatcher（引擎驱动）也是 FlowProvider（定价读取上一 tick 净流）。

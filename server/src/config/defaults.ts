@@ -27,7 +27,13 @@ export interface Config {
    * 放宽到 5% —— 仍显著低于涨跌停（10%/20%），保留「单 tick 打不穿涨跌停」的语义。
    */
   playerImpactCap: number;
-  poolTarget: number; poolMax: number;      // 48 / 50
+  /**
+   * 市场股票池目标/上限（IPO 补位系统维持的规模）。
+   * ⚠️ 与 `STOCK_SEEDS.length` 必须对齐 —— 小于种子数会让 `scheduleIpoIfNeeded`
+   * 的 deficit 恒为负（不再补位），大于则一启动就凭空排一堆 IPO。
+   * 2026-09-15 市场扩容：48 → 110（种子表 110 行）。
+   */
+  poolTarget: number; poolMax: number;      // 110 / 115
   backupKeep: number;                       // 7
   // —— 计划 B 扩展（规格 §5/§7/§8/§9/§10）——
   trading: { marketBufferPct: number; slippageK: number; boardFillProb: number;
@@ -99,8 +105,8 @@ export const DEFAULTS: Config = {
   stRule: { lossToSt: 2, stLossToDelist: 1, delistDays: 20, recovery: 0.3 },
   playerImpactLambda: 8,
   playerImpactCap: 0.05,
-  poolTarget: 48,
-  poolMax: 50,
+  poolTarget: 110,
+  poolMax: 115,
   backupKeep: 7,
   // auctionImpactK 与 playerImpactLambda 同步提高：集合竞价同样是「玩家净需求 vs 单 tick 均量」，
   // 玩家稀疏时 K=0.8 会让竞价失衡在取整后归零。cap 从 3% 放到 5%（仍低于涨跌停）。

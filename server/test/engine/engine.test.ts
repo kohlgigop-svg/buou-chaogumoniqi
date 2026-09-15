@@ -51,7 +51,10 @@ describe('engine', () => {
   it('30 日长跑：不变量与生命周期', async () => {
     const { db, eng } = mk();
     await catchUpChunked(eng, G, 30);
-    expect((db.prepare('SELECT COUNT(*) c FROM reports').get() as any).c).toBe(26); // 48股/60日，offset=fnv1a(code)%60 实测分布 → 30 日恰 26 份（观测回填，禁放宽为范围）
+    // 110 股 / 60 日报告周期，offset=fnv1a(code)%60 实测分布 → 30 日恰 51 份。
+    // 这是**观测回填**的确定性值（不是范围）：市场扩容会改变它，那是本断言在提醒你
+    // 「股票池变了，确认一下报告分布仍符合预期」，而不是让你把它放宽成区间。
+    expect((db.prepare('SELECT COUNT(*) c FROM reports').get() as any).c).toBe(51);
     expect((db.prepare('SELECT COALESCE(SUM(amount),0) s FROM ledger').get() as any).s).toBe(0);
     expect((db.prepare('SELECT COUNT(DISTINCT day) c FROM ticks').get() as any).c).toBeLessThanOrEqual(3);
   }, 120_000);

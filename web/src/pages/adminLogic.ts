@@ -4,10 +4,14 @@
 // 不是为了"安全"（前端校验永远不是安全边界），而是为了**不让用户白等一次往返**才被告知
 // 这个键不能改。服务端仍必须保留校验 —— 两者职责不同，别互相替代。
 
-/** 服务端 `api/admin.ts` 的 `CONFIG_WHITELIST`，必须与之保持一致。
+/** 服务端 `config/overrides.ts` 的 `CONFIG_WHITELIST`，必须与之保持一致。
  *  注：`auth.ipRegPerDay` 是**精确键**（注册名额），不是整个 `auth.` 节 ——
- *  该节其余项（initialCash/sessionDays）改了对既有数据无意义或需重启，故不放开。 */
-export const CONFIG_WHITELIST_PREFIXES = ['trading.', 'credit.', 'loans.', 'work.'] as const;
+ *  该节其余项（initialCash/sessionDays）改了对既有数据无意义或需重启，故不放开。
+ *
+ *  ⚠️ 曾漂移过一次：服务端加了 `p2p.` 与两个玩家冲击键，这里没跟上，
+ *  于是**后台界面会拒绝热改这些键**（前端先拦，压根发不出请求）。
+ *  `web/test/adminLogic.test.ts` 现在直接 import 服务端那份做交叉断言，防止再次漂移。 */
+export const CONFIG_WHITELIST_PREFIXES = ['trading.', 'credit.', 'loans.', 'work.', 'p2p.'] as const;
 
 /**
  * **精确键**白名单。白名单是前缀匹配，若把 `auth.ipRegPerDay` 丢进上面那个列表，
@@ -15,9 +19,16 @@ export const CONFIG_WHITELIST_PREFIXES = ['trading.', 'credit.', 'loans.', 'work
  * 对未知路径是静默 `return`，于是「写入成功」但配置毫无变化 —— 最难查的一类故障）。
  * 故精确键单独一张表，先全等后前缀。
  *
- * 服务端 `api/admin.ts` 有同样结构，两处必须同时改。
+ * ⚠️ `playerImpactLambda` / `playerImpactCap` 在**顶层**（不在 `trading.*` 下），
+ * 所以必须列在这里，放进前缀表不会生效。
+ *
+ * 服务端 `config/overrides.ts` 有同样结构，两处必须同时改。
  */
-export const CONFIG_WHITELIST_EXACT = ['auth.ipRegPerDay'] as const;
+export const CONFIG_WHITELIST_EXACT = [
+  'auth.ipRegPerDay',
+  'playerImpactLambda',
+  'playerImpactCap',
+] as const;
 
 /**
  * 该 config 键是否允许热改。

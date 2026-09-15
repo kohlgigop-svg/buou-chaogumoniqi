@@ -14,6 +14,13 @@ import {
   CONFIG_WHITELIST_PREFIXES,
   CONFIG_WHITELIST_EXACT,
 } from '../src/pages/adminLogic.js';
+// ⚠️ 直接 import **服务端**那份白名单做交叉断言 —— 这是防漂移的唯一可靠办法。
+// 之前两边各写一份字面量，服务端加了键、前端没跟上，测试照样全绿。
+import {
+  CONFIG_WHITELIST as SERVER_WHITELIST_PREFIXES,
+  CONFIG_WHITELIST_EXACT as SERVER_WHITELIST_EXACT,
+  isWhitelistedKey as SERVER_isWhitelistedKey,
+} from '../../server/src/config/overrides.js';
 
 describe('config 白名单：只允许 trading./credit./loans./work./auth.ipRegPerDay', () => {
   it('五个合法键都通过', () => {
@@ -47,12 +54,33 @@ describe('config 白名单：只允许 trading./credit./loans./work./auth.ipRegP
     }
   });
 
-  it('前缀与服务的白名单一致（防止前后端漂移）', () => {
-    expect([...CONFIG_WHITELIST_PREFIXES]).toEqual(['trading.', 'credit.', 'loans.', 'work.']);
+  // ⚠️ 这两条以前只断言「前端等于一个字面量」，于是服务端加了 `p2p.` 与两个
+  // 玩家冲击键时**完全没报警**，前端白名单悄悄落后 —— 后果是后台界面会拒绝
+  // 热改这些键（前端先拦，请求根本发不出去）。现在直接 import 服务端那份做交叉断言。
+  it('前缀白名单与服务端一致（交叉断言，防漂移）', () => {
+    expect([...CONFIG_WHITELIST_PREFIXES]).toEqual([...SERVER_WHITELIST_PREFIXES]);
+    // 顺带钉住内容，避免「两边一起改错」也算通过
+    expect([...CONFIG_WHITELIST_PREFIXES]).toEqual(
+      ['trading.', 'credit.', 'loans.', 'work.', 'p2p.']);
   });
 
-  it('精确键白名单与服务的精确键一致', () => {
-    expect([...CONFIG_WHITELIST_EXACT]).toEqual(['auth.ipRegPerDay']);
+  it('精确键白名单与服务端一致（交叉断言，防漂移）', () => {
+    expect([...CONFIG_WHITELIST_EXACT]).toEqual([...SERVER_WHITELIST_EXACT]);
+    expect([...CONFIG_WHITELIST_EXACT]).toEqual(
+      ['auth.ipRegPerDay', 'playerImpactLambda', 'playerImpactCap']);
+  });
+
+  it('⚠️ 两侧 isHotReloadableKey 判定完全一致（对每个键逐一比对）', () => {
+    // 只比数组还不够 —— 万一判定函数写法不同（如大小写、点号处理）仍会不一致。
+    // 拿一批代表性键（白名单内、白名单外、边界形态）两边各判一次。
+    const probes = [
+      'trading.slippageK', 'credit.basis', 'loans.maxRate', 'work.shiftsPerDay',
+      'p2p.maxTermDays', 'auth.ipRegPerDay', 'playerImpactLambda', 'playerImpactCap',
+      'auth.initialCash', 'tradingX', 'p2p', 'auth.', 'playerImpactLambdaX', '',
+    ];
+    for (const k of probes) {
+      expect([k, isHotReloadableKey(k)]).toEqual([k, SERVER_isWhitelistedKey(k)]);
+    }
   });
 });
 

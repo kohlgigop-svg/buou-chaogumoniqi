@@ -35,14 +35,26 @@ export interface TickSource {
  *
  * **未收到 tick 时不报 0**：`seen=false` 让 UI 能区分「刚连上还没数据」与
  * 「数据很新」，否则首屏会显示"延迟 0s"骗人。
+ *
+ * ⚠️⚠️ 这里必须把 tick 帧里的 `genesisMs` 透传给 `lagSecondsFrom`。
+ * 2026-09-15 之前的版本只传了前 4 个参数，而 `lagSecondsFrom` 的第 5 参
+ * `genesisMs` 有默认值 `0` ⇒ 算出来的 `elapsed ≈ nowMs` ⇒ 角标显示的是
+ * **当前 Unix 时间戳**（线上实测「延迟 1789362002s」），且恒 > 30s ⇒ **恒红**。
+ * 单测没抓到，是因为单测都显式传了 genesis、而这里没传 —— 测试形态与生产形态不同。
+ *
+ * 服务端若还没升级（帧里没有 `genesisMs`），**宁可继续显示「连接中…」**：
+ * 报一个假数字比暂时不报更糟（这个角标的存在意义就是「不骗人」）。
  */
 export function useLag(source: TickSource | null, refreshMs = LAG_REFRESH_MS): LagState {
-  const [last, setLast] = useState<{ day: number; tickInDay: number } | null>(null);
+  const [last, setLast] = useState<{ day: number; tickInDay: number; genesisMs: number } | null>(null);
   const [, force] = useState(0);
 
   useEffect(() => {
     if (source === null) return;
-    return source.on('tick', (m) => { setLast({ day: m.day, tickInDay: m.tickInDay }); });
+    return source.on('tick', (m) => {
+      if (!Number.isFinite(m.genesisMs)) return;   // 旧服务端：不采信，保持「连接中…」
+      setLast({ day: m.day, tickInDay: m.tickInDay, genesisMs: m.genesisMs });
+    });
   }, [source]);
 
   // 即使没有新 tick 也要刷新「距今秒数」——延迟增长本身就是信息。
@@ -53,7 +65,7 @@ export function useLag(source: TickSource | null, refreshMs = LAG_REFRESH_MS): L
   }, [last, refreshMs]);
 
   if (last === null) return { seconds: null, tone: 'ok', seen: false };
-  const seconds = lagSecondsFrom(last, Date.now(), TICKS_PER_DAY, TICK_MS);
+  const seconds = lagSecondsFrom(last, Date.now(), TICKS_PER_DAY, last.genesisMs, TICK_MS);
   return { seconds, tone: lagTone(seconds), seen: true };
 }
 

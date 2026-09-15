@@ -154,32 +154,50 @@ describe('parseServerMessage：容错解析，坏帧不抛异常', () => {
 describe('lagSecondsFrom：用 tick 的 day/tickInDay 与本地时钟推算「最近 tick 距今秒数」', () => {
   const TICKS_PER_DAY = 1200;
   const TICK_MS = 3000;
+  /**
+   * 本组用例把 `nowMs` 当「**相对创世**的毫秒数」，故 genesis 传 0。
+   * ⚠️ `genesisMs` 是**必填**参数、没有默认值：它曾经默认为 0，于是生产端漏传时
+   * 不报错、而是静默把 `nowMs` 整个当成延迟（线上角标恒亮成 `延迟 1789362002s`）。
+   * 所以这里每一处都必须显式写出来，多写一个 0 正是这条契约存在的意义。
+   */
+  const G0 = 0;
 
   it('恰好落在 tick 边界上 → 0 秒', () => {
-    expect(lagSecondsFrom({ day: 1, tickInDay: 100 }, TICK_MS, TICKS_PER_DAY)).toBe(0);
+    expect(lagSecondsFrom({ day: 1, tickInDay: 100 }, TICK_MS, TICKS_PER_DAY, G0)).toBe(0);
   });
 
   it('同日内跨分钟：过了 45 秒（15 tick）→ 45', () => {
-    expect(lagSecondsFrom({ day: 1, tickInDay: 0 }, 45_000, TICKS_PER_DAY)).toBe(45);
+    expect(lagSecondsFrom({ day: 1, tickInDay: 0 }, 45_000, TICKS_PER_DAY, G0)).toBe(45);
   });
 
   it('跨日累加：第 2 日 tickInDay=0 → 全局已完成 1200 tick', () => {
     // day=2, tickInDay=0 → completed = (2-1)*1200 + 0 = 1200 → 1200*3000ms = 3600s
-    expect(lagSecondsFrom({ day: 2, tickInDay: 0 }, 1200 * TICK_MS, TICKS_PER_DAY)).toBe(0);
-    expect(lagSecondsFrom({ day: 2, tickInDay: 0 }, 1200 * TICK_MS + 30_000, TICKS_PER_DAY)).toBe(30);
+    expect(lagSecondsFrom({ day: 2, tickInDay: 0 }, 1200 * TICK_MS, TICKS_PER_DAY, G0)).toBe(0);
+    expect(lagSecondsFrom({ day: 2, tickInDay: 0 }, 1200 * TICK_MS + 30_000, TICKS_PER_DAY, G0)).toBe(30);
   });
 
   it('跨日且日中途：第 3 日 tickInDay=600 → completed=2400+600', () => {
     const completed = 2 * TICKS_PER_DAY + 600;
-    expect(lagSecondsFrom({ day: 3, tickInDay: 600 }, completed * TICK_MS + 9_000, TICKS_PER_DAY)).toBe(9);
+    expect(lagSecondsFrom({ day: 3, tickInDay: 600 }, completed * TICK_MS + 9_000, TICKS_PER_DAY, G0)).toBe(9);
   });
 
   it('本地时钟落后于 tick 时夹到 0，不返回负数', () => {
-    expect(lagSecondsFrom({ day: 1, tickInDay: 100 }, 0, TICKS_PER_DAY)).toBe(0);
+    expect(lagSecondsFrom({ day: 1, tickInDay: 100 }, 0, TICKS_PER_DAY, G0)).toBe(0);
   });
 
   it('结果取整为秒（向下）', () => {
-    expect(lagSecondsFrom({ day: 1, tickInDay: 0 }, 1_999, TICKS_PER_DAY)).toBe(1);
+    expect(lagSecondsFrom({ day: 1, tickInDay: 0 }, 1_999, TICKS_PER_DAY, G0)).toBe(1);
+  });
+
+  it('⚠️ 生产端形态：绝对时钟 + 绝对 genesis 同样成立', () => {
+    // 上面几条是「相对创世」的算术语义；生产端传的却是 `Date.now()` 与真实的
+    // `engine.genesisMs`（绝对值，约 1.79e12）。这条把口径换到绝对时间轴上再验一遍。
+    const genesisMs = 1_700_000_000_000;
+    const completed = 19 * TICKS_PER_DAY;            // day=20, tickInDay=0
+    const now = genesisMs + completed * TICK_MS + 45_000;
+    expect(lagSecondsFrom({ day: 20, tickInDay: 0 }, now, TICKS_PER_DAY, genesisMs)).toBe(45);
+    // 同一帧、本地时钟再走 3 秒 → 46
+    expect(lagSecondsFrom({ day: 20, tickInDay: 0 }, now + 3_000, TICKS_PER_DAY, genesisMs)).toBe(48);
   });
 });
 
@@ -520,12 +538,14 @@ describe('ws.ts 连接与重连策略（可注入 socket 工厂）', () => {
 // ---------- 类型完整性（编译期约束，运行期仅做存在性断言） ----------
 
 describe('ServerMessage 判别联合可用性', () => {
-  it('tick 帧带 day/tickInDay/phase/quotes', () => {
+  it('tick 帧带 genesisMs/day/tickInDay/phase/quotes', () => {
     const m: ServerMessage = {
-      t: 'tick', day: 2, tickInDay: 1180, phase: 'settlement',
+      t: 'tick', genesisMs: 1_700_000_000_000, day: 2, tickInDay: 1180, phase: 'settlement',
       quotes: [[INDEX_CODE, 10050, 50, 1]],
     };
     expect(m.t).toBe('tick');
+    // genesisMs 是**必填**（缺了它客户端会把 Unix 时间戳当延迟），这里顺带钉住。
+    expect(m.genesisMs).toBe(1_700_000_000_000);
   });
 
   it('fill 帧是本项目的私有成交回报字段', () => {

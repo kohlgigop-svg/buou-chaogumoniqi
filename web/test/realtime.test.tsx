@@ -16,7 +16,7 @@ const alice: AuthUser = { id: 1, username: 'alice', credit: 700, isAdmin: false,
 const authed: Session = { status: 'authed', user: alice };
 
 /** 可手动驱动的 client 替身：记录订阅、可手动派发 tick。 */
-function fakeClient(): WsClient & { emitTick: (m: { day: number; tickInDay: number; quotes: [string, number, number, number][] }) => void; subLog: string[][]; started: boolean } {
+function fakeClient(): WsClient & { emitTick: (m: { day: number; tickInDay: number; quotes: [string, number, number, number][]; genesisMs?: number }) => void; subLog: string[][]; started: boolean } {
   const tickHandlers = new Set<(m: never) => void>();
   const subLog: string[][] = [];
   const obj = {
@@ -31,7 +31,7 @@ function fakeClient(): WsClient & { emitTick: (m: { day: number; tickInDay: numb
     },
     isOpen: () => true,
     retries: () => 0,
-    emitTick(m: { day: number; tickInDay: number; quotes: [string, number, number, number][] }) {
+    emitTick(m: { day: number; tickInDay: number; quotes: [string, number, number, number][]; genesisMs?: number }) {
       for (const cb of tickHandlers) (cb as unknown as (x: typeof m) => void)(m);
     },
   };
@@ -48,6 +48,21 @@ function renderShell(client: WsClient | null, latencyBadge?: string | null): Ret
       </MemoryRouter>
     </SessionProvider>,
   );
+}
+
+/** 1 游戏日 = 1200 tick，1 tick = 3000ms（与服务端 `core/clock.ts` 一致）。 */
+const TICKS_PER_DAY = 1200;
+const TICK_MS = 3000;
+
+/**
+ * 构造一个「让指定 day/tickInDay 的 tick 落后 lagSeconds 秒」的 genesis 毫秒。
+ * `lagSeconds = 0` 表示这帧 tick 恰好等于此刻 —— 属正常延迟，角标不该出现。
+ *
+ * 之所以要现算而不是写死：`useLag` 内部用的是真实 `Date.now()`。
+ */
+function genesisFor(day: number, tickInDay: number, lagSeconds = 0): number {
+  const completed = (day - 1) * TICKS_PER_DAY + tickInDay;
+  return Date.now() - completed * TICK_MS - lagSeconds * 1000;
 }
 
 describe('延迟角标 lagBadgeText', () => {
@@ -88,11 +103,33 @@ describe('AppShell 延迟角标渲染', () => {
   it('收到新鲜 tick 后角标消失（正常延迟不占位）', () => {
     const c = fakeClient();
     renderShell(c);
-    act(() => { c.emitTick({ day: 1, tickInDay: 0, quotes: [] }); });
-    // tickInDay=0 对应「刚完成 0 个 tick」，本地时间减去 0 → 延迟很大；
-    // 这里用「当前 tick 紧跟现在」的方式无法在纯渲染里构造，故只断言渲染未崩且文案是延迟类
-    const badge = screen.queryByTestId('latency-badge');
-    expect(badge === null || /延迟 \d+s/.test(badge.textContent ?? '')).toBe(true);
+    act(() => { c.emitTick({ day: 1, tickInDay: 0, quotes: [], genesisMs: genesisFor(1, 0) }); });
+    expect(screen.queryByTestId('latency-badge')).toBeNull();
+  });
+
+  it('⚠️ 回归：genesisMs 必须从 tick 透传进 lagSecondsFrom（否则角标恒亮成 Unix 时间戳）', () => {
+    // 修复前 `useLag` 只传前 4 个参数、`lagSecondsFrom` 的 `genesisMs` 退回默认 0，
+    // 于是 `elapsed ≈ nowMs` ⇒ 角标显示「延迟 1789362002s」（当前 Unix 时间戳）且恒红。
+    // 这里用「已跑完 20 游戏日」的 tick：genesis 真的透传了 → 延迟 0 → 角标不出现；
+    // 一旦 genesis 丢失，算出来会是 ~17 亿秒，角标必然出现 ⇒ 这条会红。
+    const c = fakeClient();
+    renderShell(c);
+    act(() => { c.emitTick({ day: 20, tickInDay: 0, quotes: [], genesisMs: genesisFor(20, 0) }); });
+    expect(screen.queryByTestId('latency-badge')).toBeNull();
+  });
+
+  it('tick 落后 45s → 角标显示「延迟 45s」（证明数值真的走完整条链路）', () => {
+    const c = fakeClient();
+    renderShell(c);
+    act(() => { c.emitTick({ day: 20, tickInDay: 0, quotes: [], genesisMs: genesisFor(20, 0, 45) }); });
+    expect(screen.getByTestId('latency-badge')).toHaveTextContent('延迟 45s');
+  });
+
+  it('旧服务端（帧里没有 genesisMs）→ 保持「连接中…」，不报假数字', () => {
+    const c = fakeClient();
+    renderShell(c);
+    act(() => { c.emitTick({ day: 1, tickInDay: 0, quotes: [] }); });   // 故意不带 genesisMs
+    expect(screen.getByTestId('latency-badge')).toHaveTextContent('连接中…');
   });
 });
 

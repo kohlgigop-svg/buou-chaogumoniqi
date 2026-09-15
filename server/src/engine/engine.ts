@@ -29,7 +29,16 @@ export class Engine {
   private readonly dataDir: string | undefined;
   private readonly onTickError: (() => void) | undefined;
   private readonly masterSeed: number;
-  private readonly genesisMs: number;
+  /**
+   * 创世毫秒（恢复时以 `engine_state.genesis_ms` 为准，构造参数仅用于首次创世）。
+   *
+   * **公开只读是有意的**：WS 层要把它盖进 `tick` 帧，客户端才能用**与服务端同一个口径**
+   * 算「行情延迟」（`(now − genesis − 已完成tick数 × 3000) / 1000`）。
+   * 客户端拿不到 genesis 时只能退回一个默认值，算出来的是 Unix 时间戳而非延迟
+   * —— 线上曾因此把角标恒亮成「延迟 1789362002s」（详见 web/src/lib/useLag.ts 注释）。
+   * 从 Engine 取而不是让 WS 自己查表，是为了让「genesis 存在哪」只有一处知识。
+   */
+  readonly genesisMs: number;
   /** 实时循环周期：生产 1000ms 足够（tick 本身 3s）；测试注入小值以便快速推进。 */
   private readonly tickMs: number;
   private readonly clock: GameClock;

@@ -103,8 +103,11 @@ export async function registerWsRoutes(app: FastifyInstance, deps: WsDeps): Prom
       const r = quoteRow(ctx, code);
       if (r !== null) rows.push(r);
     }
-    push(c, 'tick', { t: 'tick', day: ctx.day, tickInDay: ctx.tickInDay, phase: ctx.phase,
-      quotes: rows });
+    // ⚠️ `genesisMs` 必须随每一帧带上（而不是只在握手时发一次）：客户端要靠它才能
+    //    与服务端用同一口径算「延迟」，而重连后客户端状态是全新的 —— 放在 tick 帧里
+    //    天然自愈，也省掉一个新的消息类型。值是常量，重复传的代价可忽略。
+    push(c, 'tick', { t: 'tick', genesisMs: engine.genesisMs, day: ctx.day,
+      tickInDay: ctx.tickInDay, phase: ctx.phase, quotes: rows });
   };
 
   // ---------- 引擎订阅 ----------

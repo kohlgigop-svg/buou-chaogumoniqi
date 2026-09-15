@@ -164,6 +164,22 @@ describe('tick 推送', () => {
     expect(typeof tick.phase).toBe('string');
   });
 
+  it('⚠️ 每帧必须带 genesisMs —— 客户端靠它才能算出真实延迟', async () => {
+    // 客户端 `lagSecondsFrom` 要算 `(now − genesis − 已完成tick数 × 3000) / 1000`。
+    // 这个字段曾经不存在，前端只好退回默认值 0，于是角标把「当前 Unix 时间戳」
+    // 当成延迟显示（线上实测「延迟 1789362002s」）并恒为红色。
+    // 它同时也保证 genesis 只有一处真相源：WS 取的就是 Engine 上那个值。
+    const { sid } = await register('gina', '1.1.1.21');
+    const c = await connect(sid);
+    await c.ready;
+    send(c.ws, { t: 'sub', codes: ['600619'] });
+    await sleep(50);
+    await pump(lastTick() + 2);
+    expect(await waitFor(() => lastTickMsg(c.msgs) !== undefined)).toBe(true);
+    expect(lastTickMsg(c.msgs)!.genesisMs).toBe(GENESIS);
+    expect(engine.genesisMs).toBe(GENESIS);
+  });
+
   it('每 2 tick 才推一次（节流）', async () => {
     const { sid } = await register('zoe', '1.1.1.11');
     const c = await connect(sid);

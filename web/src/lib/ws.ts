@@ -49,6 +49,13 @@ export type QuoteRow = [string, number, number, number];
 
 export interface TickMessage {
   t: 'tick';
+  /**
+   * 创世毫秒，由服务端在**每一帧**里带上。
+   *
+   * ⚠️ 不是可选字段的「顺手多带一个」：`lagSecondsFrom` 必须有它才能算出真实延迟。
+   * 服务端若还是旧版本（帧里没有它），`useLag` 会保持「连接中…」而**不会**报一个假数字。
+   */
+  genesisMs: number;
   day: number;
   tickInDay: number;
   phase: string;
@@ -142,13 +149,19 @@ function completedTicks(day: number, tickInDay: number, ticksPerDay: number): nu
  * 口径与 `server/src/api/admin.ts` 的 `lagSeconds` 完全一致：
  * `(nowMs − genesisMs − (lastTick + 1) × TICK_MS) / 1000`，其中 `(lastTick+1)` 换成
  * 由 `day`/`tickInDay` 还原的已完成 tick 数。本地时钟落后时夹到 0，不返回负数。
+ *
+ * ⚠️⚠️ `genesisMs` **必填、没有默认值**，这是有意的。
+ * 它曾经有默认值 `0`，于是「调用方漏传」不会报错、而是静默把 `nowMs` 整个当成延迟：
+ * 线上角标因此恒亮成 `延迟 1789362002s`（= 当前 Unix 时间戳）。
+ * 生产唯一调用方 `useLag()` 当时只传了前 4 个参数，而单测都传了 5 个 —— 两边形态不同，
+ * 所以测试全绿、线上全错。**不要为了「少写一个参数」把默认值加回来。**
  */
 export function lagSecondsFrom(
   m: { day: number; tickInDay: number },
   nowMs: number,
   ticksPerDay: number,
+  genesisMs: number,
   tickMs = 3000,
-  genesisMs = 0,
 ): number {
   const completed = completedTicks(m.day, m.tickInDay, ticksPerDay);
   const elapsed = nowMs - genesisMs - completed * tickMs;

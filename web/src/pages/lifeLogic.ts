@@ -292,14 +292,19 @@ export function repayable(l: LoanRow): boolean {
 export const CREDIT_LOW_HINT =
   '信誉分低于 500 暂无法借款。完成班次 / 按期还款可提升信誉；若曾破产，救济金也会同时重置信誉。';
 
-/** 借款门槛摘要（放在借款按钮下方，避免用户点了才被拒）。 */
+/**
+ * 借款门槛摘要（放在借款按钮下方，避免用户点了才被拒）。
+ * ⚠️ 额度**不再按档位查表**，而是服务端按「信誉分 × 每分额度」算出的公式值
+ *    （`capCents` 即该结果），故这里只说「授信额度」；**不要在文案里写死倍率** ——
+ *    倍率是服务端配置（`loans.capPerCreditPoint`，可热改），写死会随配置漂移。
+ */
 export function borrowConditions(products: LoanProduct[]): string[] {
   if (products.length === 0) return ['信誉分 ≥ 500'];
   const cap = products[0]?.capCents ?? 0;
   const rate = products[0]?.rateE6 ?? 0;
   return [
     `信誉分 ≥ 500`,
-    `单档额度 ≤ ${fmtMoney(cap)}`,
+    `授信额度 ≤ ${fmtMoney(cap)}（随信誉分线性变化）`,
     `日息 ${fmtRate(rate)}（按授信档位浮动）`,
     `无宽限 / 逾期中的贷款`,
     `未偿本息不超净资产 × 信誉分 ÷ 300`,

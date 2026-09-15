@@ -89,20 +89,28 @@ beforeEach(() => {
 
 // ---------- 产品表 ----------
 
-describe('loanProducts：按信誉分查表', () => {
+describe('loanProducts：额度 = 信誉分 × 每分额度，日息按档位', () => {
   it('分数 <500 一律拒贷（空数组）', () => {
     for (const s of [350, 400, 499]) expect(loanProducts(cfg, s)).toEqual([]);
   });
 
-  it('500/600/700/850 各档的额度与日息正确', () => {
+  it('额度随信誉分线性：capPerCreditPoint = 500_000 分（= ¥5,000/分）', () => {
+    // 500 分 → 250_000_000 分 = ¥2,500,000；三档期限额度相同（同一信誉分）
     expect(loanProducts(cfg, 500)).toEqual([
-      { termDays: 20, rateE6: 600, capCents: 2_000_000 },
-      { termDays: 60, rateE6: 600, capCents: 2_000_000 },
-      { termDays: 120, rateE6: 600, capCents: 2_000_000 },
+      { termDays: 20, rateE6: 600, capCents: 250_000_000 },
+      { termDays: 60, rateE6: 600, capCents: 250_000_000 },
+      { termDays: 120, rateE6: 600, capCents: 250_000_000 },
     ]);
-    expect(loanProducts(cfg, 600)[0]).toEqual({ termDays: 20, rateE6: 500, capCents: 5_000_000 });
-    expect(loanProducts(cfg, 700)[0]).toEqual({ termDays: 20, rateE6: 400, capCents: 13_000_000 });
-    expect(loanProducts(cfg, 850)[0]).toEqual({ termDays: 20, rateE6: 300, capCents: 50_000_000 });
+    expect(loanProducts(cfg, 600)[0]).toEqual({ termDays: 20, rateE6: 500, capCents: 300_000_000 });
+    expect(loanProducts(cfg, 700)[0]).toEqual({ termDays: 20, rateE6: 400, capCents: 350_000_000 });
+    expect(loanProducts(cfg, 850)[0]).toEqual({ termDays: 20, rateE6: 300, capCents: 425_000_000 });
+  });
+
+  it('额度公式可核验：capCents === score × capPerCreditPoint（不依赖任何字面量）', () => {
+    for (const s of [500, 549, 600, 601, 750, 850]) {
+      const p = loanProducts(cfg, s)[0]!;
+      expect(p.capCents).toBe(s * cfg.loans.capPerCreditPoint);
+    }
   });
 
   it('分数落在区间端点时取该档（含上界）', () => {
@@ -120,16 +128,40 @@ describe('borrow：门槛矩阵', () => {
       .toThrowError(/credit score below 500/);
   });
 
-  it('金额超过档位授信上限 → LOAN_LIMIT', () => {
-    setCredit(uid, 500); // 上限 ¥20,000
-    expect(() => borrow(db, cfg, engine, uid, 2_000_001, 20))
+  it('金额超过授信额度 → LOAN_LIMIT（额度 = 信誉分 × ¥5,000）', () => {
+    // ⚠️ 额度与杠杆上限**都正比于信誉分**，取严时谁生效只取决于净资产：
+    //    额度 < 杠杆 ⟺ 净资产 > capPerCreditPoint × leverageDivisor = 150_000_000 分。
+    //    默认初始资金只有 100_000_000 分（此时杠杆先触发），故先补足净资产，
+    //    否则这条测到的是 LEVERAGE 而不是 LOAN_LIMIT。
+    setCredit(uid, 500);
+    const topUp = 100_000_000;   // 净资产 → 200_000_000 分
+    post(db, 1, 0, 'topup', uid, [
+      { account: ACC.MARKET, bucket: 'A', amount: -topUp, kind: 'TEST_TOPUP' },
+      { account: uid, bucket: 'A', amount: topUp, kind: 'TEST_TOPUP' },
+    ]);
+    // 500 分 → 额度 250_000_000 分；杠杆上限 = 200_000_000 × 500/300 ≈ 333_333_333 分
+    expect(() => borrow(db, cfg, engine, uid, 250_000_001, 20))
       .toThrowError(/exceeds credit cap/);
+    expect(borrow(db, cfg, engine, uid, 250_000_000, 20)).toBeGreaterThan(0);
+  });
+
+  it('⚠️ 净资产低于 capPerCreditPoint×leverageDivisor 时，杠杆先于授信额度触发', () => {
+    // 两条闸门都正比于信誉分 ⇒ 「谁先拒」只取决于净资产：
+    //   授信额度 < 杠杆上限 ⟺ 净资产 > capPerCreditPoint × leverageDivisor。
+    // 默认初始资金 100_000_000 分 < 150_000_000 分 ⇒ **默认玩家实际被杠杆卡住**，
+    // 此时调大 capPerCreditPoint 对玩家完全无感（运营调参时最容易被这个误导）。
+    setCredit(uid, 600);
+    const threshold = cfg.loans.capPerCreditPoint * cfg.loans.leverageDivisor;
+    expect(DEFAULTS.auth.initialCash).toBeLessThan(threshold);
+    // 600 分授信额度 = 300_000_000 分（远超净资产），但杠杆上限只有 200_000_000 分：
+    // 借 200_000_001 既没超额度、又超了杠杆 ⇒ 必须报 LEVERAGE。
+    expect(() => borrow(db, cfg, engine, uid, 200_000_001, 20))
+      .toThrowError(/exceeds leverage cap/);
   });
 
   it('总杠杆约束取严：未偿本息 ≤ 净资产 × 分数/300', () => {
-    setCredit(uid, 500);
-    // 杠杆上限 = 净资产 × 分数/300。用 600 分档制造杠杆先触发的场景：
-    // 把现金花掉推低净资产，令杠杆上限低于档位上限（¥50,000 = 5_000_000 分）。
+    // 杠杆上限 = 净资产 × 分数/300。把现金花掉推低净资产，令杠杆上限低于授信额度：
+    // 600 分时额度 = 300_000_000 分，而这里把净资产压到 1_000_000 分 → 杠杆上限 2_000_000 分。
     setCredit(uid, 600);
     // 花掉绝大部分现金 → 净资产压到只剩 1_000_000 分；杠杆上限 = 1_000_000 × 600/300 = 2_000_000 分。
     // ⚠️ 用 initialCash 推导，不要写死 ¥90,000 —— 初始资金是配置项，写死会在调整时静默失配。

@@ -61,10 +61,21 @@ export function shiftCredit(db: DB, cfg: Config, userId: number, day: number): n
   return applyCreditEvent(db, cfg, userId, cfg.credit.shiftPoint, 'SHIFT', day);
 }
 
-/** 分数 → 授信档（<500 返回 null；tiers 按 minScore 降序，取首个 ≤ 分数的档）。 */
+/**
+ * 分数 → 授信档（<500 返回 null；tiers 按 minScore 降序，取首个 ≤ 分数的档）。
+ *
+ * ⚠️ **额度是公式、不是查表**：`信誉分 × cfg.loans.capPerCreditPoint`（分）。
+ *    默认 capPerCreditPoint = 500_000 分，即「个人信誉分 × 5000 元」
+ *    （600 分 → ¥3,000,000）。故 `tiers` 只保留 `[minScore, rateE6]` 两列。
+ *
+ * ⚠️ 额度与杠杆上限（`净资产 × 分数 / leverageDivisor`）**都正比于信誉分**，
+ *    取严时谁生效只取决于净资产：额度 < 杠杆 ⟺ 净资产 > capPerCreditPoint × leverageDivisor
+ *    （默认 500_000 × 300 = 150_000_000 分 = ¥1,500,000）。净资产低于此值时**杠杆先触发**，
+ *    此时调大 capPerCreditPoint 不会有任何可见效果。
+ */
 export function tierOf(cfg: Config, score: number): { capCents: number; rateE6: number } | null {
-  for (const [minScore, capCents, rateE6] of cfg.loans.tiers) {
-    if (score >= minScore) return { capCents, rateE6 };
+  for (const [minScore, rateE6] of cfg.loans.tiers) {
+    if (score >= minScore) return { capCents: score * cfg.loans.capPerCreditPoint, rateE6 };
   }
   return null;
 }

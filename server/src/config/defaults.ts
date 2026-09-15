@@ -39,7 +39,12 @@ export interface Config {
     shiftPoint: number; shiftCapPer20d: number };
   loans: { termDays: [number, number, number]; graceDays: number; penaltyMult: number;
     liqOverdueDay: number; leverageDivisor: number; reliefCash: number;
-    tiers: [number, number, number][] };    // [minScore, 授信上限(分), 日息 e6]，minScore 降序
+    /** 授信额度 = 信誉分 × 本值（**分**）。默认 500_000 分 = ¥5,000/分，
+     *  即「个人信誉分 × 5000 元」（信誉 600 → ¥3,000,000）。 */
+    capPerCreditPoint: number;
+    /** [minScore, 日息 e6]，minScore 降序。<500 拒贷。
+     *  ⚠️ 额度**不在这里**——它是 `capPerCreditPoint` 算出的公式，本表只决定日息。 */
+    tiers: [number, number][] };
   /**
    * 玩家间借贷（P2P）。与 NPC 银行贷款的差别：放款是真金白银从出借方划出，
    * 故没有"授信额度"概念，只有出借方可用现金与单笔上限。
@@ -106,10 +111,11 @@ export const DEFAULTS: Config = {
     forcedLiq: -80, bankruptcyScore: 400, shiftPoint: 1, shiftCapPer20d: 10 },
   loans: { termDays: [20, 60, 120], graceDays: 3, penaltyMult: 2, liqOverdueDay: 10,
     leverageDivisor: 300, reliefCash: 2_000_000,
-    tiers: [ // <500 拒贷；取首个 minScore≤分数 的档
-      [850, 50_000_000, 300], [800, 32_000_000, 320], [750, 20_000_000, 350],
-      [700, 13_000_000, 400], [650, 8_000_000, 450], [600, 5_000_000, 500],
-      [550, 3_000_000, 550], [500, 2_000_000, 600],
+    capPerCreditPoint: 500_000,   // 授信额度 = 信誉分 × ¥5,000（600 分 → ¥3,000,000）
+    tiers: [ // <500 拒贷；取首个 minScore≤分数 的档。只决定日息，额度由上面那条公式算
+      [850, 300], [800, 320], [750, 350],
+      [700, 400], [650, 450], [600, 500],
+      [550, 550], [500, 600],
     ] },
   p2p: {
     maxPrincipal: 500_000_000,   // 单笔上限 ¥5,000,000

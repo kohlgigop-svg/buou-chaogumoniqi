@@ -37,21 +37,26 @@ describe('plan-b config 扩展', () => {
     expect(DEFAULTS.loans.liqOverdueDay).toBe(10);
     expect(DEFAULTS.loans.leverageDivisor).toBe(300);
     expect(DEFAULTS.loans.reliefCash).toBe(2_000_000);
+    // 授信额度 = 信誉分 × capPerCreditPoint。500_000 分 = ¥5,000 → 「信誉分 × 5000 元」。
+    expect(DEFAULTS.loans.capPerCreditPoint).toBe(500_000);
   });
 
-  it('loans.tiers 全部 8 档（minScore 降序）', () => {
+  it('loans.tiers 全部 8 档（minScore 降序）——只含日息，额度不在此表', () => {
     expect(DEFAULTS.loans.tiers).toEqual([
-      [850, 50_000_000, 300],
-      [800, 32_000_000, 320],
-      [750, 20_000_000, 350],
-      [700, 13_000_000, 400],
-      [650, 8_000_000, 450],
-      [600, 5_000_000, 500],
-      [550, 3_000_000, 550],
-      [500, 2_000_000, 600],
+      [850, 300],
+      [800, 320],
+      [750, 350],
+      [700, 400],
+      [650, 450],
+      [600, 500],
+      [550, 550],
+      [500, 600],
     ]);
     const scores = DEFAULTS.loans.tiers.map(t => t[0]);
     expect([...scores].sort((a, b) => b - a)).toEqual(scores);
+    // ⚠️ 每档必须是二元组：若有人把额度列加回来，tierOf 会把额度误读成 rateE6
+    //    （日息瞬间变成 5000%/日），故这里锁死长度。
+    for (const t of DEFAULTS.loans.tiers) expect(t).toHaveLength(2);
   });
 
   it('work 节逐键精确', () => {

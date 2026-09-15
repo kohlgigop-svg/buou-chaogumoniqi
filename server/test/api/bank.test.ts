@@ -2,10 +2,11 @@
 // 覆盖鉴权、zod 校验、门槛错误信封、happy path 与信誉流水分页。
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { openDb, type DB } from '../../src/db/database.js';
+import { openDb, ACC, type DB } from '../../src/db/database.js';
 import { DEFAULTS } from '../../src/config/defaults.js';
 import { Engine } from '../../src/engine/engine.js';
 import { LoanSettlementHook } from '../../src/domain/loans.js';
+import { post } from '../../src/core/ledger.js';
 import { buildApp } from '../../src/api/app.js';
 
 const PASS = 'p@ssw0rd!9';
@@ -43,10 +44,11 @@ describe('/api/bank/products', () => {
     const body = res.json();
     expect(body.credit).toBe(600);
     expect(body.creditLow).toBe(false);
+    // 额度 = 信誉分 × capPerCreditPoint = 600 × 500_000 = 300_000_000 分 = ¥3,000,000
     expect(body.products).toEqual([
-      { termDays: 20, rateE6: 500, capCents: 5_000_000 },
-      { termDays: 60, rateE6: 500, capCents: 5_000_000 },
-      { termDays: 120, rateE6: 500, capCents: 5_000_000 },
+      { termDays: 20, rateE6: 500, capCents: 300_000_000 },
+      { termDays: 60, rateE6: 500, capCents: 300_000_000 },
+      { termDays: 120, rateE6: 500, capCents: 300_000_000 },
     ]);
   });
 
@@ -80,9 +82,19 @@ describe('POST /api/bank/loans', () => {
     expect(res.json().code).toBe('VALIDATION');
   });
 
-  it('超档位额度 → 403 LOAN_LIMIT', async () => {
+  it('超授信额度 → 403 LOAN_LIMIT（额度 = 信誉分 × ¥5,000）', async () => {
+    // ⚠️ 额度与杠杆上限都正比于信誉分，取严时谁生效只取决于净资产：
+    //    额度 < 杠杆 ⟺ 净资产 > 500_000 × 300 = 150_000_000 分。
+    //    默认初始资金 100_000_000 分时杠杆先触发，故先补足净资产 ——
+    //    否则这条测到的是 LEVERAGE 而不是 LOAN_LIMIT。
+    const topUp = 100_000_000;
+    post(db, 1, 0, 'topup', uid, [
+      { account: ACC.MARKET, bucket: 'A', amount: -topUp, kind: 'TEST_TOPUP' },
+      { account: uid, bucket: 'A', amount: topUp, kind: 'TEST_TOPUP' },
+    ]);
+    // 600 分 → 额度 300_000_000 分；杠杆上限 = 200_000_000 × 600/300 = 400_000_000 分
     const res = await app.inject({ method: 'POST', url: '/api/bank/loans', cookies: { sid },
-      payload: { amount: 5_000_001, termDays: 60 } });
+      payload: { amount: 300_000_001, termDays: 60 } });
     expect(res.statusCode).toBe(403);
     expect(res.json().code).toBe('LOAN_LIMIT');
   });

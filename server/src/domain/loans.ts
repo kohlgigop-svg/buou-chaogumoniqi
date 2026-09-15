@@ -51,8 +51,14 @@ function owed(l: LoanRow): Cents { return l.outstanding + l.accrued_interest; }
  *   2 期限 ∈ termDays（否则 BAD_TERM）
  *   3 金额 > 0
  *   4 无 grace/overdue 贷在身（否则 OVERDUE_EXISTS）
- *   5 amount ≤ 档位剩余额度（档位上限 − 未偿本金合计）（否则 LOAN_LIMIT）
+ *   5 amount ≤ 授信额度剩余（信誉分 × cfg.loans.capPerCreditPoint − 未偿本金合计）
+ *     （否则 LOAN_LIMIT）
  *   6 未偿本息 + amount ≤ 净资产 × score/leverageDivisor（否则 LEVERAGE）
+ *
+ * ⚠️ 第 5、6 条**都正比于信誉分**，故谁先拒只取决于净资产：
+ *    额度 < 杠杆 ⟺ 净资产 > capPerCreditPoint × leverageDivisor
+ *    （默认 500_000 × 300 = 150_000_000 分 = ¥1,500,000）。
+ *    净资产低于 ¥1,500,000 的玩家实际被**杠杆**卡住，调大 capPerCreditPoint 无感。
  * 放款：ledger BANK→user（kind 'LOAN_DRAW'），loans 行 status='active'，due_day = day + term。
  */
 export function borrow(db: DB, cfg: Config, engine: Engine, userId: number,

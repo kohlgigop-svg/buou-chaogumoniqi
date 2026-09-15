@@ -129,10 +129,18 @@ describe('登录后放行', () => {
     await screen.findByText('首页', { selector: '.tabbar__label' });
     // 顶部标题栏是稳定信号：首页已实现为真实页面，不再是 .page-placeholder
     expect(headerText()).toBe('大布偶证券交易所');
-    // 底部 Tab 五项齐全
-    for (const l of ['行情', '生活', '榜单', '我的']) {
+    // 底部 Tab 六项齐全（2026-09-15 起「新闻」提升为一等板块，与行情并列）
+    for (const l of ['行情', '新闻', '生活', '榜单', '我的']) {
       expect(screen.getByText(l, { selector: '.tabbar__label' })).toBeInTheDocument();
     }
+  });
+
+  it('authed 访问 /news → 渲染每日新闻板块（已实现，非占位）', async () => {
+    renderAt('/news', authed(alice));
+    await screen.findByText('新闻', { selector: '.tabbar__label' });
+    // 卡片标题是稳定信号；且必须是**独立板块**而不是被踢回首页
+    expect(await screen.findByText('每日新闻')).toBeInTheDocument();
+    expect(document.querySelector('.page-placeholder')).toBeNull();
   });
 
   it('authed 访问 /market → 渲染行情页（已实现，非占位）', async () => {

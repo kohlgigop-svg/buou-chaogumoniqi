@@ -13,6 +13,9 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { to: '/', label: '首页', icon: '⌂', end: true },
   { to: '/market', label: '行情', icon: '≡' },
+  // 新闻是一等板块（与行情并列），不是行情页的附属卡片。
+  // TabBar 的 `.tabbar__item` 是 `flex: 1`，6 项会自动平分宽度，无需改样式。
+  { to: '/news', label: '新闻', icon: '☴' },
   { to: '/life', label: '生活', icon: '✦' },
   { to: '/leaderboard', label: '榜单', icon: '♛' },
   { to: '/me', label: '我的', icon: '☺' },

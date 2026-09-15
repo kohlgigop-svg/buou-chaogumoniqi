@@ -27,6 +27,7 @@ import SearchBox from '../components/SearchBox.js';
 import SectorHeatmap from '../components/SectorHeatmap.js';
 import StockRowItem from '../components/StockRow.js';
 import { advancerRatio, filterStocks, moverRows, heatTone } from './marketLogic.js';
+import NewsRelatedTag from '../components/NewsRelatedTag.js';
 import { useRealtimeQuotes } from '../lib/realtime.js';
 import { applyLiveIndex, applyLiveMover, applyLiveRow, liveOf, subCodesOf } from '../lib/liveQuote.js';
 
@@ -171,9 +172,7 @@ export default function Market(): React.JSX.Element {
               <li key={n.id} className="news__item">
                 <div className="news__head">
                   <span className="news__day">第 {n.day} 日</span>
-                  {n.impactE6 !== 0 ? (
-                    <span className={`news__impact num ${heatTone(n.impactE6)}`}>{fmtPct(n.impactE6 / 1e6)}</span>
-                  ) : null}
+                  <NewsRelatedTag related={n.related} />
                 </div>
                 <div className="news__title">{n.title}</div>
               </li>

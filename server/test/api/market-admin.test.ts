@@ -120,6 +120,81 @@ describe('GET /api/news 与 /api/announcements', () => {
   });
 });
 
+describe('GET /api/news 的「关联标的实际涨跌」（2026-09-15）', () => {
+  /** 把某只股票做成「当日 +5%」，返回它的 code。 */
+  function setStockUp5(): { code: string; sector: string; name: string } {
+    const s = db.prepare(`SELECT s.code, s.name, s.sector, t.prev_close pc FROM stocks s
+      JOIN stock_state t ON t.code = s.code WHERE s.status != 'delisted' ORDER BY s.code LIMIT 1`)
+      .get() as { code: string; name: string; sector: string; pc: number };
+    db.prepare('UPDATE stock_state SET price = ? WHERE code = ?')
+      .run(Math.round(s.pc * 1.05), s.code);
+    return s;
+  }
+  const addNews = (scope: string, target: string | null, title: string): void => {
+    db.prepare(`INSERT INTO news(day, tick, scope, target, type_id, title, impact_e6, drift_days)
+      VALUES (1, 60, ?, ?, 'X', ?, 123456, 3)`).run(scope, target, title);
+  };
+  const newsOf = async (title: string): Promise<Record<string, unknown>> => {
+    const res = await app.inject({ method: 'GET', url: '/api/news?limit=50' });
+    expect(res.statusCode).toBe(200);
+    const hit = (res.json().items as Record<string, unknown>[]).find(i => i['title'] === title);
+    expect(hit).toBeDefined();
+    return hit as Record<string, unknown>;
+  };
+
+  it('个股新闻挂的是该股当日实际涨跌，不是预测值', async () => {
+    const s = setStockUp5();
+    addNews('STK', s.code, '个股新闻');
+    const n = await newsOf('个股新闻');
+    expect(n['related']).toMatchObject({ code: s.code, name: s.name });
+    expect((n['related'] as { chgPct: number }).chgPct).toBeCloseTo(0.05, 6);
+  });
+
+  it('板块新闻挂板块均涨跌，name 是板块名、code 为 null（没有板块页可跳）', async () => {
+    const s = setStockUp5();
+    addNews('SEC', s.sector, '板块新闻');
+    const n = await newsOf('板块新闻');
+    const rel = n['related'] as { code: string | null; name: string; chgPct: number };
+    expect(rel.name).toBe(s.sector);
+    expect(rel.code).toBeNull();
+    expect(Number.isFinite(rel.chgPct)).toBe(true);
+  });
+
+  it('全市场新闻挂大盘指数涨跌', async () => {
+    addNews('MKT', null, '全市场新闻');
+    const n = await newsOf('全市场新闻');
+    expect(n['related']).toMatchObject({ code: 'IDX:COMP', name: '大盘' });
+  });
+
+  it('⚠️ 不下发 impact_e6 —— 那是前视信息，等于把答案印在新闻上', async () => {
+    addNews('MKT', null, '泄题新闻');
+    const n = await newsOf('泄题新闻');
+    // 库里确实存着 123456（引擎要用），但接口不得下发
+    expect(db.prepare("SELECT impact_e6 v FROM news WHERE title = '泄题新闻'").get())
+      .toMatchObject({ v: 123456 });
+    expect(n).not.toHaveProperty('impactE6');
+    expect(n).not.toHaveProperty('impact_e6');
+    expect(n).not.toHaveProperty('driftDays');
+  });
+
+  it('已退市标的没有行情可挂 → related 为 null（UI 不渲染那一段，不显示 0%）', async () => {
+    addNews('STK', '600619', '退市股新闻');
+    db.prepare("UPDATE stocks SET status = 'delisted' WHERE code = '600619'").run();
+    const n = await newsOf('退市股新闻');
+    expect(n['related']).toBeNull();
+  });
+
+  it('个股详情的新闻列表同样不下发 impactE6', async () => {
+    const s = setStockUp5();
+    addNews('STK', s.code, '详情页新闻');
+    const res = await app.inject({ method: 'GET', url: `/api/stocks/${s.code}` });
+    expect(res.statusCode).toBe(200);
+    const rows = res.json().news as Record<string, unknown>[];
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every(r => !('impactE6' in r))).toBe(true);
+  });
+});
+
 describe('GET /api/leaderboard', () => {
   it('按总资产排序，含 username/totalAssets/returnPct；破产用户带标记', async () => {
     // 给 alice 巨额亏损使另一人领先：花掉现金

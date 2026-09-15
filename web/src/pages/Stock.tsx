@@ -232,11 +232,6 @@ export default function Stock(): React.JSX.Element {
               <li key={n.id} className="news__item">
                 <div className="news__head">
                   <span className="news__day">第 {n.day} 日</span>
-                  {n.impactE6 !== 0 ? (
-                    <span className={`news__impact num ${n.impactE6 > 0 ? 'up' : 'down'}`}>
-                      {fmtPct(n.impactE6 / 1e6)}
-                    </span>
-                  ) : null}
                 </div>
                 <div className="news__title">{n.title}</div>
               </li>

@@ -446,6 +446,14 @@ body {
   background: var(--bg-raised); color: var(--text-secondary);
 }
 .news__impact { margin-left: auto; font-size: var(--fs-xs); }
+/* 关联标的 + 当日实际涨跌（真实终端的「行情联动」）：整块靠右，可点进个股页。 */
+.news__related {
+  margin-left: auto; display: inline-flex; align-items: center; gap: var(--sp-2);
+  color: var(--text-secondary); text-decoration: none; font-size: var(--fs-xs);
+  padding: 1px 6px; border-radius: var(--r-sm); background: var(--bg-raised);
+}
+a.news__related:hover { background: var(--bg-hover); color: var(--text); }
+.news__related-chg { font-variant-numeric: tabular-nums; }
 .news__title { font-size: var(--fs-sm); line-height: 1.45; }
 .news__more {
   width: 100%; margin-top: var(--sp-3);

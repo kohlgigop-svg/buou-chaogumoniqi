@@ -11,7 +11,7 @@ import News from '../src/pages/News.js';
 const alice: AuthUser = { id: 1, username: 'alice', credit: 700, isAdmin: false, bankruptCount: 0 };
 
 function item(id: number, title: string, over: Partial<NewsRow> = {}): NewsRow {
-  return { id, day: 5, tick: 60, scope: 'MKT', title, impactE6: 0, ...over };
+  return { id, day: 5, tick: 60, scope: 'MKT', title, ...over };
 }
 
 const fetchMock = vi.fn();
@@ -127,29 +127,62 @@ describe('News 分页', () => {
   });
 });
 
-describe('News 影响幅度', () => {
-  it('正向影响显示为带 + 的百分比并用 up 色', async () => {
+describe('News 关联标的的实际涨跌（不是预测值）', () => {
+  it('个股新闻：显示标的名 + 当日实际涨跌，且可点进个股详情页', async () => {
     fetchMock.mockResolvedValue(json({
-      items: [item(1, '利好', { impactE6: 15000 })], nextBefore: null,
+      items: [item(1, '万嘉置业业绩预增', {
+        scope: 'STK', related: { code: '000003', name: '万嘉置业', chgPct: 0.015 },
+      })], nextBefore: null,
     }));
     renderNews();
-    const pct = await screen.findByText('+1.50%');
-    expect(pct.className).toContain('up');
+    const tag = await screen.findByTestId('news-related');
+    expect(tag.textContent).toContain('万嘉置业');
+    expect(tag.textContent).toContain('+1.50%');
+    expect(tag.querySelector('.news__related-chg')?.className).toContain('up');
+    expect(tag.getAttribute('href')).toBe('/market/000003');
   });
 
-  it('负向影响用 down 色', async () => {
+  it('下跌用 down 色', async () => {
     fetchMock.mockResolvedValue(json({
-      items: [item(1, '利空', { impactE6: -20000 })], nextBefore: null,
+      items: [item(1, '利空', { scope: 'STK', related: { code: '000003', name: '甲', chgPct: -0.02 } })],
+      nextBefore: null,
     }));
     renderNews();
-    const pct = await screen.findByText('-2.00%');
-    expect(pct.className).toContain('down');
+    const tag = await screen.findByTestId('news-related');
+    expect(tag.textContent).toContain('-2.00%');
+    expect(tag.querySelector('.news__related-chg')?.className).toContain('down');
   });
 
-  it('影响为 0 时不显示幅度标记', async () => {
-    fetchMock.mockResolvedValue(json({ items: [item(1, '中立', { impactE6: 0 })], nextBefore: null }));
+  it('板块/大盘没有详情页 → 不是链接（code 为 null）', async () => {
+    fetchMock.mockResolvedValue(json({
+      items: [item(1, '板块新闻', { scope: 'SEC', related: { code: null, name: '白酒饮料', chgPct: 0.03 } })],
+      nextBefore: null,
+    }));
     renderNews();
-    await screen.findByText('中立');
+    const tag = await screen.findByTestId('news-related');
+    expect(tag.tagName).toBe('SPAN');
+    expect(tag.textContent).toContain('白酒饮料');
+  });
+
+  it('⚠️ 标的无行情（related 为 null）时不渲染涨跌 —— 不能显示成 0%', async () => {
+    fetchMock.mockResolvedValue(json({
+      items: [item(1, '退市股新闻', { scope: 'STK', related: null })], nextBefore: null,
+    }));
+    renderNews();
+    await screen.findByText('退市股新闻');
+    expect(screen.queryByTestId('news-related')).not.toBeInTheDocument();
     expect(screen.queryByText('0.00%')).not.toBeInTheDocument();
+  });
+
+  it('⚠️ 接口不再下发 impactE6（前视信息），页面自然也不再显示它', async () => {
+    // 夹具里根本没有这个字段；旧实现会渲染 `undefined` 或崩，这里钉住新行为。
+    fetchMock.mockResolvedValue(json({
+      items: [item(1, '中立新闻', { related: { code: 'IDX:COMP', name: '大盘', chgPct: 0 } })],
+      nextBefore: null,
+    }));
+    renderNews();
+    const li = await screen.findByTestId('news-item');
+    expect(li.textContent).not.toContain('undefined');
+    expect(li.textContent).not.toContain('NaN');
   });
 });

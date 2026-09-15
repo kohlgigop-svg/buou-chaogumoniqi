@@ -36,7 +36,7 @@ const detail: StockDetail = {
   ],
   dividends: [{ announcedDay: 40, exDay: 45, perShareE6: 2_100_000 }],
   news: [
-    { id: 7, day: 5, tick: 60, scope: 'STK', target: '600519', typeId: 'REPORT', title: '一季度业绩预增', impactE6: 84_200 },
+    { id: 7, day: 5, tick: 60, scope: 'STK', target: '600519', typeId: 'REPORT', title: '一季度业绩预增' },
   ],
   fundamental: { eps: 12.5, pe: 13.59 },
 };

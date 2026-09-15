@@ -1,19 +1,20 @@
-// pages/News.tsx —— 新闻流：倒序分页 + 触底/按钮加载更多。
+// pages/News.tsx —— 每日新闻（独立板块）：倒序分页 + 触底/按钮加载更多。
 //
 // 服务端 `GET /api/news?limit&before` 用 `id < before` 取下一批，`nextBefore` 是末条 id，
 // 因此相邻两页在边界上**必然重叠一条**，合并时按 id 去重（见 marketLogic.mergeNews）。
+//
+// 关于「新闻旁边的涨跌」：那是**关联标的的当日实际涨跌**（个股/板块/大盘），
+// 与真实行情终端一致 —— 终端挂在新闻旁的是行情快照，不是对新闻影响的预测。
+// 服务端因此**不再下发 `impact_e6`**（见 api.ts 的 NewsRelated 注释）。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { marketApi, type NewsRow } from '../api.js';
 import Card from '../components/Card.js';
 import { Spinner, Empty } from '../components/Spinner.js';
 import ErrorBox from '../components/ErrorBox.js';
+import NewsRelatedTag from '../components/NewsRelatedTag.js';
 import { mergeNews } from './marketLogic.js';
-import { fmtPct } from '../format.js';
 
 const PAGE = 30;
-
-/** 影响幅度阈值：|impactE6| 换算成百分比后，用于给标题加涨/跌色。 */
-function impactPct(impactE6: number): number { return impactE6 / 1e6; }
 
 export default function News(): React.JSX.Element {
   const [items, setItems] = useState<NewsRow[]>([]);
@@ -61,25 +62,21 @@ export default function News(): React.JSX.Element {
 
   return (
     <div className="news">
-      <Card title="市场新闻" flush>
+      <Card title="每日新闻" flush>
         {items.length === 0 ? (
           <Empty text="暂无新闻" />
         ) : (
           <ul className="news__list">
-            {items.map(n => {
-              const p = impactPct(n.impactE6);
-              const tone = p > 0 ? 'up' : p < 0 ? 'down' : 'flat';
-              return (
-                <li key={n.id} className="news__item" data-testid="news-item">
-                  <div className="news__head">
-                    <span className="news__day">第 {n.day} 日</span>
-                    <span className="news__scope">{scopeLabel(n.scope)}</span>
-                    {p !== 0 ? <span className={`news__impact num ${tone}`}>{fmtPct(p)}</span> : null}
-                  </div>
-                  <div className="news__title">{n.title}</div>
-                </li>
-              );
-            })}
+            {items.map(n => (
+              <li key={n.id} className="news__item" data-testid="news-item">
+                <div className="news__head">
+                  <span className="news__day">第 {n.day} 日</span>
+                  <span className="news__scope">{scopeLabel(n.scope)}</span>
+                  <NewsRelatedTag related={n.related} />
+                </div>
+                <div className="news__title">{n.title}</div>
+              </li>
+            ))}
           </ul>
         )}
       </Card>

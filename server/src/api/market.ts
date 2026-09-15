@@ -32,19 +32,65 @@ function quoteRows(db: DB): QuoteRow[] {
 
 function chgPct(price: number, pc: number): number { return pc > 0 ? (price - pc) / pc : 0; }
 
+/**
+ * 指数现值与涨跌。口径：优先当日 tick 快照，回落最新日 K（candles_day 价格 = 指数点 ×100）。
+ * 抽成函数是因为 `/api/market/overview` 与新闻的「关联标的」都要它 ——
+ * 两处各算一遍迟早漂移（本仓已因同类问题踩过坑）。
+ */
+function indexLevel(db: DB): { level: number; chgPct: number } {
+  const now = db.prepare(`SELECT price FROM ticks WHERE code = 'IDX:COMP'
+    ORDER BY day DESC, tick DESC LIMIT 1`).get() as { price: number } | undefined;
+  const days = db.prepare(`SELECT c FROM candles_day WHERE code = 'IDX:COMP'
+    ORDER BY day DESC LIMIT 2`).all() as { c: number }[];
+  const level = now?.price ?? days[0]?.c ?? 300_000;
+  const prev = days[1]?.c ?? days[0]?.c ?? level;
+  return { level, chgPct: prev > 0 ? (level - prev) / prev : 0 };
+}
+
+/**
+ * 新闻条目旁的「涨跌」—— 是关联标的**当日实际涨跌**，不是预测。
+ *
+ * 真实行情终端（同花顺/东方财富/Wind）挂在新闻旁的就是这个：一条新闻 + 它
+ * 关联个股/板块/大盘的**实时行情快照**。没有哪家会给新闻附一个「预计涨幅」。
+ *
+ * ⚠️ 我们**故意不再下发 `impact_e6`**（模型内部的冲击强度）。它是前视信息：
+ *    新闻在 `tick ∈ [60,1159)` 到达，冲击还没释放完，玩家看到 `+5.2%` 就知道该买什么
+ *    —— 那不是「看新闻」，是「读答案」。标题本身已经给了方向（「业绩预增」= 利好），
+ *    幅度交给玩家自己判断，才与真实市场同构。
+ */
+export interface NewsRelated { code: string | null; name: string; chgPct: number }
+
+function newsRelatedLookup(db: DB): (scope: string, target: string | null) => NewsRelated | null {
+  const rows = quoteRows(db);
+  const byCode = new Map(rows.map(r => [r.code, { name: r.name, chg: chgPct(r.price, r.pc) }]));
+  const bySector = new Map<string, { sum: number; n: number }>();
+  for (const r of rows) {
+    const s = bySector.get(r.sector) ?? { sum: 0, n: 0 };
+    s.sum += chgPct(r.price, r.pc); s.n += 1;
+    bySector.set(r.sector, s);
+  }
+  const idx = indexLevel(db);
+  return (scope, target) => {
+    if (scope === 'STK') {
+      const hit = target === null ? undefined : byCode.get(target);
+      // 退市股不在 quoteRows 里 → 没有行情可挂，返回 null（UI 不渲染那一段）
+      return hit === undefined ? null : { code: target, name: hit.name, chgPct: hit.chg };
+    }
+    if (scope === 'SEC') {
+      const s = target === null ? undefined : bySector.get(target);
+      return s === undefined || s.n === 0 ? null : { code: null, name: target as string, chgPct: s.sum / s.n };
+    }
+    return { code: 'IDX:COMP', name: '大盘', chgPct: idx.chgPct };
+  };
+}
+
 export async function registerMarketRoutes(app: FastifyInstance, deps: MarketDeps): Promise<void> {
   const { db } = deps;
 
   /** 大盘概览：指数现值+涨跌、20 板块、涨跌家数、成交额、涨跌幅前 5。 */
   app.get('/api/market/overview', async () => {
     const rows = quoteRows(db);
-    // 指数现值：优先当日 tick 快照，回落最新日 K（candles_day 价格 = 指数点 ×100）。
-    const idxNow = db.prepare(`SELECT price FROM ticks WHERE code = 'IDX:COMP'
-      ORDER BY day DESC, tick DESC LIMIT 1`).get() as { price: number } | undefined;
-    const idxDay = db.prepare(`SELECT c FROM candles_day WHERE code = 'IDX:COMP'
-      ORDER BY day DESC LIMIT 2`).all() as { c: number }[];
-    const level = idxNow?.price ?? idxDay[0]?.c ?? 300_000;
-    const prevLevel = idxDay[1]?.c ?? idxDay[0]?.c ?? level;
+    const { level, chgPct: idxChg } = indexLevel(db);
     const sectors = new Map<string, number[]>();
     for (const r of rows) {
       const arr = sectors.get(r.sector) ?? [];
@@ -57,8 +103,7 @@ export async function registerMarketRoutes(app: FastifyInstance, deps: MarketDep
       (n > 0 ? sorted.slice(0, n) : sorted.slice(n))
         .map(({ code, name, chg, price }) => ({ code, name, chgPct: chg, price }));
     return {
-      index: { code: 'IDX:COMP', level: level / 100,
-        chgPct: prevLevel > 0 ? (level - prevLevel) / prevLevel : 0 },
+      index: { code: 'IDX:COMP', level: level / 100, chgPct: idxChg },
       sectors: [...sectors.entries()].map(([name, arr]) => ({
         name, chgPct: arr.reduce((a, b) => a + b, 0) / arr.length })),
       advancers: withChg.filter(r => r.chg > 0).length,
@@ -88,7 +133,7 @@ export async function registerMarketRoutes(app: FastifyInstance, deps: MarketDep
       ORDER BY period_idx DESC LIMIT 8`).all(code);
     const dividends = db.prepare(`SELECT announced_day announcedDay, ex_day exDay,
         per_share_e6 perShareE6 FROM dividends WHERE code = ? ORDER BY ex_day DESC LIMIT 10`).all(code);
-    const news = db.prepare(`SELECT id, day, tick, scope, type_id typeId, title, impact_e6 impactE6
+    const news = db.prepare(`SELECT id, day, tick, scope, type_id typeId, title
       FROM news WHERE (scope = 'STK' AND target = ?) OR (scope = 'SEC' AND target = ?)
       ORDER BY id DESC LIMIT 20`).all(code, q.sector);
     return {
@@ -118,16 +163,22 @@ export async function registerMarketRoutes(app: FastifyInstance, deps: MarketDep
     return { code, type: 'day', candles };
   });
 
-  /** 新闻流（倒序分页）。 */
+  /**
+   * 新闻流（倒序分页）。每条带 `related` = 关联标的的**当日实际涨跌**
+   * （个股→该股、板块→板块均涨跌、全市场→指数）。**不下发 `impact_e6`**，理由见
+   * `newsRelatedLookup` 的注释：那是前视信息，等于把答案印在新闻上。
+   */
   app.get('/api/news', async (req) => {
     const { limit, before } = PageSchema.parse(req.query);
     const n = Math.min(limit ?? 50, 200);
     const conds = ['1=1']; const params: number[] = [];
     if (before !== undefined) { conds.push('id < ?'); params.push(before); }
-    const items = db.prepare(`SELECT id, day, tick, scope, target, type_id typeId, title,
-        impact_e6 impactE6, drift_days driftDays FROM news WHERE ${conds.join(' AND ')}
-      ORDER BY id DESC LIMIT ?`).all(...params, n) as { id: number }[];
-    const last = items[items.length - 1];
+    const rows = db.prepare(`SELECT id, day, tick, scope, target, type_id typeId, title
+      FROM news WHERE ${conds.join(' AND ')} ORDER BY id DESC LIMIT ?`).all(...params, n) as
+      { id: number; scope: string; target: string | null }[];
+    const related = newsRelatedLookup(db);
+    const items = rows.map(r => ({ ...r, related: related(r.scope, r.target) }));
+    const last = rows[rows.length - 1];
     return { items, nextBefore: last !== undefined ? last.id : null };
   });
 

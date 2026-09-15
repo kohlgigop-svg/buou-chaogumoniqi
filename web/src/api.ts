@@ -156,10 +156,26 @@ export interface ReportRow {
   periodIdx: number; reportDay: number; epsE6: number; revenue: number; profit: number; surpriseE6: number;
 }
 export interface DividendRow { announcedDay: number; exDay: number; perShareE6: number }
+/**
+ * 新闻条目旁的「涨跌」—— 是关联标的**当日实际涨跌**，不是预测。
+ *
+ * 真实行情终端挂在新闻旁的就是这个（一条新闻 + 它关联个股/板块/大盘的实时快照）。
+ * 服务端**故意不下发** `impact_e6`（模型内部的冲击强度）：新闻在 `tick ∈ [60,1159)`
+ * 到达、冲击还没释放完，玩家看到 `+5.2%` 就知道该买什么 —— 那不是看新闻，是读答案。
+ * 标题本身已给方向（「业绩预增」= 利好），幅度交给玩家判断。
+ */
+export interface NewsRelated {
+  /** 可跳转的个股代码；板块/大盘为 null（没有对应的详情页）。 */
+  code: string | null;
+  name: string;
+  chgPct: number;
+}
 export interface NewsRow {
   id: number; day: number; tick?: number; scope: string; target?: string;
   /** 服务端 `news.type_id` 是 TEXT（事件 id 如 `MKT_RRR_CUT` / `REPORT` / `IPO`），不是数字。 */
-  typeId?: string; title: string; impactE6: number; driftDays?: number;
+  typeId?: string; title: string;
+  /** 关联标的当日实际涨跌；标的已退市/无行情时为 null。 */
+  related?: NewsRelated | null;
 }
 export interface StockDetail {
   quote: QuoteView; reports: ReportRow[]; dividends: DividendRow[]; news: NewsRow[];

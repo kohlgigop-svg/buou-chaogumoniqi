@@ -36,7 +36,8 @@ const stocks: StockRow[] = [
 ];
 
 function newsItem(id: number, title: string): NewsRow {
-  return { id, day: 3, tick: 100, scope: 'MKT', title, impactE6: 15000 };
+  return { id, day: 3, tick: 100, scope: 'MKT', title,
+    related: { code: 'IDX:COMP', name: '大盘', chgPct: 0.015 } };
 }
 
 const page1: NewsRow[] = [newsItem(5, '央行宣布降准'), newsItem(4, '经济数据超预期')];

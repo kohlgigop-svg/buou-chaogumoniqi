@@ -98,7 +98,7 @@ describe('filterStocks', () => {
 
 // —— 新闻分页合并 ——
 
-const newsRow = (id: number): NewsRow => ({ id, day: 1, scope: 'MKT', title: `t${id}`, impactE6: 0 });
+const newsRow = (id: number): NewsRow => ({ id, day: 1, scope: 'MKT', title: `t${id}` });
 
 describe('mergeNews', () => {
   it('追加去重，保持倒序（按 id 降序）', () => {

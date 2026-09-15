@@ -427,3 +427,62 @@ describe('admin：测试账号不占 IP 注册名额', () => {
     expect(again.json().code).toBe('USERNAME_TAKEN');
   });
 });
+
+describe('admin：删除有交易记录的账号（外键顺序回归）', () => {
+  it('⚠️ 有成交记录的用户也必须能删（trades.order_id → orders 外键）', async () => {
+    const t = await register('zztraded', '6.6.6.1');
+    // 造一条完整的「挂单 + 成交」链：成交行的 order_id 指向该用户的订单。
+    // 这正是线上 4 个真实玩家删不掉的原因 —— 先删 orders 会触发外键约束失败。
+    const code = (db.prepare('SELECT code FROM stocks LIMIT 1').get() as { code: string }).code;
+    const oid = Number(db.prepare(`INSERT INTO orders(user_id, code, side, type, price, qty, filled,
+        status, client_key, day, created_tick)
+      VALUES (?,?,'B','L',100,100,100,'done','kt',1,0)`).run(t.id, code).lastInsertRowid);
+    db.prepare(`INSERT INTO trades(order_id, user_id, code, side, price, qty,
+        commission, stamp, transfer, day, tick)
+      VALUES (?,?,?,'B',100,100,0,0,0,1,0)`).run(oid, t.id, code);
+    db.prepare('INSERT INTO holdings(user_id, code, qty_total, qty_sellable, cost_total) VALUES (?,?,?,?,?)')
+      .run(t.id, code, 100, 100, 10_000);
+
+    // 有持仓 → 需 force
+    const blocked = await app.inject({ method: 'DELETE', url: `/api/admin/users/${t.id}`,
+      cookies: { sid: adminSid } });
+    expect(blocked.statusCode).toBe(409);
+
+    const del = await app.inject({ method: 'DELETE', url: `/api/admin/users/${t.id}?force=true`,
+      cookies: { sid: adminSid } });
+    // 修复前这里是 500（FOREIGN KEY constraint failed）
+    expect(del.statusCode).toBe(200);
+    expect(del.json().ok).toBe(true);
+
+    // 成交与挂单都应被清掉，不留孤儿
+    expect((db.prepare('SELECT COUNT(*) c FROM orders WHERE user_id = ?').get(t.id) as { c: number }).c).toBe(0);
+    expect((db.prepare('SELECT COUNT(*) c FROM trades WHERE user_id = ?').get(t.id) as { c: number }).c).toBe(0);
+    expect((db.prepare('SELECT COUNT(*) c FROM holdings WHERE user_id = ?').get(t.id) as { c: number }).c).toBe(0);
+
+    // 账本仍必须平衡
+    const audit = await app.inject({ method: 'GET', url: '/api/admin/audit', cookies: { sid: adminSid } });
+    expect(audit.json().globalOk).toBe(true);
+    expect(audit.json().usersOk).toBe(true);
+  });
+
+  it('⚠️ 对手方视角：成交行挂在对方订单上时，删单方也不报外键错', async () => {
+    const seller = await register('zzseller', '6.6.6.2');
+    const buyer = await register('zzbuyer', '6.6.6.3');
+    const code = (db.prepare('SELECT code FROM stocks LIMIT 1').get() as { code: string }).code;
+    // 买方挂单，卖方成交：trades.order_id 指向**买方**的订单
+    const oid = Number(db.prepare(`INSERT INTO orders(user_id, code, side, type, price, qty, filled,
+        status, client_key, day, created_tick)
+      VALUES (?,?,'B','L',100,100,100,'done','kb',1,0)`).run(buyer.id, code).lastInsertRowid);
+    db.prepare(`INSERT INTO trades(order_id, user_id, code, side, price, qty,
+        commission, stamp, transfer, day, tick)
+      VALUES (?,?,?,'S',100,100,0,0,0,1,0)`).run(oid, seller.id, code);
+
+    // 删卖方：其成交行挂在买方订单上，必须靠 `order_id IN (...)` 分支清掉
+    const del = await app.inject({ method: 'DELETE', url: `/api/admin/users/${seller.id}?force=true`,
+      cookies: { sid: adminSid } });
+    expect(del.statusCode).toBe(200);
+    // 卖方的成交行已清；买方的订单仍在（不属于被删用户）
+    expect((db.prepare('SELECT COUNT(*) c FROM trades WHERE user_id = ?').get(seller.id) as { c: number }).c).toBe(0);
+    expect((db.prepare('SELECT COUNT(*) c FROM orders WHERE id = ?').get(oid) as { c: number }).c).toBe(1);
+  });
+});

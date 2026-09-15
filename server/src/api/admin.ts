@@ -29,18 +29,8 @@ const TestUserSchema = z.object({
 
 /** 前缀白名单（带点号，避免 `tradingX` 这类误匹配）。 */
 const CONFIG_WHITELIST = ['trading.', 'credit.', 'loans.', 'work.', 'p2p.'];
-/**
- * 精确键白名单（全等匹配）。
- *
- * 为什么不直接往上面加 `'auth.ipRegPerDay'`：白名单是 `startsWith` 匹配，
- * 那样会派生放行 `auth.ipRegPerDayX` 这类不存在的键；而 `applyOverride` 对未知
- * 路径是**静默 return**（不报错），于是接口返回「写入成功」但配置毫无变化。
- * 故精确键单独判断。
- */
 const CONFIG_WHITELIST_EXACT = [
   'auth.ipRegPerDay',
-  // 玩家价格冲击的两个键是**顶层**（不在 trading.* 下），故必须走精确键表。
-  // 这两个值是「玩家能不能推动盘面」的总开关，运营中调它俩比调 trading.* 更常用。
   'playerImpactLambda',
   'playerImpactCap',
 ];
@@ -159,7 +149,15 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminDeps)
     }
 
     db.transaction(() => {
-      // 先清所有从属行（不含 ledger —— 触发器禁止，且必须保留以维持全局平衡）
+      // 先清所有从属行（不含 ledger —— 触发器禁止，且必须保留以维持全局平衡）。
+      //
+      // ⚠️ 顺序有硬约束：`trades.order_id` 有外键指向 `orders(id)`，
+      // 所以**必须先删 trades、再删 orders**，否则 `FOREIGN KEY constraint failed`。
+      // 线上实测：没交易的探针账号删得掉，有交易记录的真实玩家全报 500 —— 就是这个顺序问题。
+      // 注意 trades 没有指向 users 的外键，故除了自己的成交，还要删掉
+      // 「挂单属于自己」的那些成交行（对手方视角）。
+      db.prepare(`DELETE FROM trades WHERE user_id = ?
+        OR order_id IN (SELECT id FROM orders WHERE user_id = ?)`).run(id, id);
       db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
       db.prepare('DELETE FROM orders WHERE user_id = ?').run(id);
       db.prepare('DELETE FROM holdings WHERE user_id = ?').run(id);

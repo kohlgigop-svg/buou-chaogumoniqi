@@ -43,8 +43,8 @@ npm run soak -w server -- --days 1000 --users 12   # 长时守恒压测
 - `src/db/` —— 打开/迁移（`migrations/*.sql`，按 `user_version` 递增）
 - `src/engine/` —— tick 推进与结算（`TICK_MS=3000`、`TICKS_PER_DAY=1200`）
 - `src/trading/` —— 下单、限价板队列撮合、集合竞价
-- `src/domain/` —— 组合估值、信誉、贷款、打工与能力
-- `src/api/` —— Fastify 路由（auth/me/trading/bank/work/market/admin/ws）
+- `src/domain/` —— 组合估值、信誉、贷款、**融资融券**（`margin.ts`）、打工与能力
+- `src/api/` —— Fastify 路由（auth/me/trading/bank/**margin**/p2p/work/market/admin/ws）
 
 ## 部署与运维
 
@@ -122,8 +122,8 @@ docker run --rm -p 8080:8080 \
 ## 已知限制
 
 1. **引擎在结算窗内不实时落盘**：结算 tick 处于单个 SQLite 事务中，崩溃时整体回滚并重放，故保证一致性但不保证"已推送的中间态"可恢复。
-2. **`/api/admin/config` 的 value 未做逐键类型校验**：仅白名单前缀（`trading.`/`credit.`/`loans.`/`work.`）约束，写入值类型由运维自担；错误类型会在下次读取时暴露。
-3. **强平取价使用当日 tick 快照**（`ctx.quotes`）并以 `limit_down` 兜底；停牌/退市股在强平日无法卖出，持仓保留至可交易时。
+2. **`/api/admin/config` 的 value 未做逐键类型校验**：仅白名单前缀（`trading.`/`credit.`/`loans.`/`work.`/`p2p.`/`margin.`）约束，写入值类型由运维自担；错误类型会在下次读取时暴露。**前缀白名单是前后端两份**（`src/config/overrides.ts` 与 `web/src/pages/adminLogic.ts`），加键时两处都要加 —— `web/test/adminLogic.test.ts` 直接 import 服务端那份做交叉断言，就是为了防漂移。
+3. **强平取价使用当日 tick 快照**（`ctx.quotes`）并以 `limit_down`/`limit_up` 兜底；停牌/退市股在强平日无法卖出，持仓保留至可交易时。此限制对**贷款强平**与**融资融券强平**同样成立（`domain/margin.ts` 的 `forceSell` 在 `ctx.quotes` 取不到价时直接跳过，退市券由 `reconcile` 收敛）。
 4. **备份为单文件 `day-N.db`（`VACUUM INTO`）**，无异地/增量；`/api/admin/backups` 仅列出与下载。
 5. **单进程单写者**：引擎 tick 与 HTTP 请求共享同一 SQLite 连接，勿多实例指向同一库文件。
 
